@@ -1,0 +1,214 @@
+package com.dragonminez.common.init.block.custom;
+
+import com.mojang.serialization.MapCodec;
+
+import com.dragonminez.common.init.block.entity.TimeChamberPortalBlockEntity;
+import com.dragonminez.server.world.dimension.HTCDimension;
+import com.dragonminez.server.world.structure.helper.DMZStructures;
+import com.dragonminez.server.world.structure.helper.StructureLocator;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.BaseEntityBlock;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.chunk.status.ChunkStatus;
+import net.minecraft.world.level.levelgen.structure.Structure;
+import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.level.portal.TeleportTransition;
+import net.minecraft.world.phys.Vec3;
+import org.jetbrains.annotations.Nullable;
+
+public class TimeChamberPortalBlock extends BaseEntityBlock {
+	public static final MapCodec<TimeChamberPortalBlock> CODEC = simpleCodec(TimeChamberPortalBlock::new);
+
+	@Override
+	protected MapCodec<? extends BaseEntityBlock> codec() {
+		return CODEC;
+	}
+
+
+	public TimeChamberPortalBlock() {
+		this(BlockBehaviour.Properties.ofFullCopy(Blocks.QUARTZ_BLOCK).noLootTable().strength(-1.0F, 3600000.0F));
+	}
+
+	public TimeChamberPortalBlock(BlockBehaviour.Properties properties) {
+		super(properties);
+	}
+
+    @Override
+    public InteractionResult useWithoutItem(BlockState pState, Level pLevel, BlockPos pPos, Player pPlayer, BlockHitResult pHit) {
+        if (!pLevel.isClientSide()) {
+            BlockEntity be = pLevel.getBlockEntity(pPos);
+            if (!(be instanceof TimeChamberPortalBlockEntity tile)) return InteractionResult.FAIL;
+
+            boolean onHTC = pLevel.dimension().equals(HTCDimension.HTC_KEY);
+            ResourceKey<Level> targetDimKey = onHTC ? Level.OVERWORLD : HTCDimension.HTC_KEY;
+            ServerLevel targetLevel = pPlayer.level().getServer().getLevel(targetDimKey);
+
+            if (targetLevel != null && !pPlayer.isPassenger()) {
+                BlockPos targetPos = null;
+
+                if (onHTC) {
+                    if (tile.hasCachedTarget()) {
+                        targetPos = tile.getCachedTarget();
+                    } else {
+                        targetPos = findTargetAndCache(targetLevel, true, pPlayer, tile, this);
+                    }
+                }
+                else {
+                    targetPos = findTargetAndCache(targetLevel, false, pPlayer, tile, this);
+                    // Note: we intentionally do NOT record the entry portal into the HTC-side
+                    // block entity. Leaving the Time Chamber must always resolve the KamiLookout
+                    // structure so the player is returned to Kami's Lookout, never to an arbitrary
+                    // (or admin-placed) entry portal.
+                }
+
+                if (targetPos != null) {
+                    teleportPlayer(pPlayer, targetLevel, targetPos, onHTC ? 180 : 90);
+                } else {
+                    BlockPos backup;
+                    if (onHTC) {
+                        // Even if the portal block itself could not be pinpointed, always land the
+                        // player at Kami's Lookout structure rather than the world spawn.
+                        BlockPos kami = StructureLocator.locateStructure(targetLevel, DMZStructures.KAMILOOKOUT, BlockPos.ZERO);
+                        backup = kami != null ? kami : targetLevel.getRespawnData().pos();
+                    } else {
+                        backup = new BlockPos(0, 130, 0);
+                    }
+                    teleportPlayer(pPlayer, targetLevel, backup, 90);
+                }
+            }
+            return InteractionResult.SUCCESS;
+        }
+        return InteractionResult.CONSUME;
+    }
+
+
+    private BlockPos findTargetAndCache(ServerLevel targetLevel, boolean onHTC, Player player, TimeChamberPortalBlockEntity tile, Block targetBlock) {
+        ResourceKey<Structure> targetStructureKey = onHTC ? DMZStructures.KAMILOOKOUT : DMZStructures.TIMECHAMBER;
+
+        BlockPos searchCenter = onHTC ? BlockPos.ZERO : player.blockPosition();
+
+        BlockPos structurePos = StructureLocator.locateStructure(targetLevel, targetStructureKey, searchCenter);
+        BlockPos finalPos = null;
+
+        if (structurePos != null) {
+            targetLevel.getChunk(structurePos.getX() >> 4, structurePos.getZ() >> 4, net.minecraft.world.level.chunk.status.ChunkStatus.FULL, true);
+
+            finalPos = findPortalInStructureMeta(targetLevel, structurePos, targetStructureKey, targetBlock);
+
+            if (finalPos == null) {
+                finalPos = findPortalByAreaScan(targetLevel, structurePos, onHTC, targetBlock);
+            }
+        }
+
+        if (finalPos != null) {
+            tile.setCachedTarget(finalPos);
+        }
+
+        return finalPos;
+    }
+
+
+	private BlockPos findPortalInStructureMeta(ServerLevel level, BlockPos structureCenter, ResourceKey<Structure> structureKey, Block targetBlock) {
+		var structureRegistry = level.registryAccess().lookupOrThrow(Registries.STRUCTURE);
+		var structureHolder = structureRegistry.get(structureKey).orElse(null);
+		if (structureHolder == null) return null;
+
+		level.getChunk(structureCenter.getX() >> 4, structureCenter.getZ() >> 4, net.minecraft.world.level.chunk.status.ChunkStatus.STRUCTURE_STARTS);
+		StructureStart start = level.structureManager().getStructureAt(structureCenter, structureHolder.value());
+
+		// getStructureAt requires the probe position to be inside the structure's bounding box on
+		// every axis, including Y. The located center uses a fixed Y that may fall outside the
+		// structure, so fall back to any start referenced by the center chunk (Y-agnostic).
+		if (start == null || !start.isValid()) {
+			Structure targetStructure = structureHolder.value();
+			for (StructureStart candidate : level.structureManager()
+					.startsForStructure(new ChunkPos(structureCenter.getX(), structureCenter.getZ()), s -> s == targetStructure)) {
+				if (candidate != null && candidate.isValid()) {
+					start = candidate;
+					break;
+				}
+			}
+		}
+
+		if (start != null && start.isValid()) {
+			var boundingBox = start.getBoundingBox();
+			// Force-load every chunk the structure occupies so its blocks are actually placed;
+			// the portal may sit in a chunk adjacent to the located center.
+			for (int cx = boundingBox.minX() >> 4; cx <= boundingBox.maxX() >> 4; cx++) {
+				for (int cz = boundingBox.minZ() >> 4; cz <= boundingBox.maxZ() >> 4; cz++) {
+					level.getChunk(cx, cz, net.minecraft.world.level.chunk.status.ChunkStatus.FULL, true);
+				}
+			}
+			for (BlockPos pos : BlockPos.betweenClosed(boundingBox.minX(), boundingBox.minY(), boundingBox.minZ(), boundingBox.maxX(), boundingBox.maxY(), boundingBox.maxZ())) {
+				if (level.getBlockState(pos).is(targetBlock)) return pos.above();
+			}
+		}
+		return null;
+	}
+
+    private BlockPos findPortalByAreaScan(ServerLevel level, BlockPos center, boolean onHTC, Block targetBlock) {
+        int offX, offY, offZ;
+
+        if (onHTC) {
+            offX = 45; offY = 125; offZ = 75;
+        } else {
+            offX = 62; offY = 4; offZ = 66;
+        }
+
+        BlockPos[] candidates = new BlockPos[4];
+        candidates[0] = center.offset(offX, offY, offZ);
+        candidates[1] = center.offset(-offZ, offY, offX);
+        candidates[2] = center.offset(-offX, offY, -offZ);
+        candidates[3] = center.offset(offZ, offY, -offX);
+
+        int searchRadius = 24;
+        int verticalRadius = 30;
+
+        for (BlockPos p : candidates) {
+            level.getChunk(p.getX() >> 4, p.getZ() >> 4, net.minecraft.world.level.chunk.status.ChunkStatus.FULL, true);
+
+            for (BlockPos checkPos : BlockPos.betweenClosed(
+                    p.getX() - searchRadius, p.getY() - verticalRadius, p.getZ() - searchRadius,
+                    p.getX() + searchRadius, p.getY() + verticalRadius, p.getZ() + searchRadius)) {
+
+                if (level.getBlockState(checkPos).is(targetBlock)) {
+                    return checkPos.above();
+                }
+            }
+        }
+
+        return null;
+    }
+
+	private void teleportPlayer(Player player, ServerLevel targetLevel, BlockPos targetPos, float rotX) {
+		Vec3 pos = new Vec3(targetPos.getX() + 0.5, targetPos.getY(), targetPos.getZ() + 0.5);
+		player.teleport(new TeleportTransition(targetLevel, pos, Vec3.ZERO, rotX, 0.0F, TeleportTransition.DO_NOTHING));
+	}
+
+	@Nullable
+	@Override
+	public BlockEntity newBlockEntity(BlockPos pPos, BlockState pState) {
+		return new TimeChamberPortalBlockEntity(pPos, pState);
+	}
+
+	@Override
+	public RenderShape getRenderShape(BlockState pState) {
+		return RenderShape.MODEL;
+	}
+}
+

@@ -1,0 +1,59 @@
+package com.dragonminez.common.util.types.items;
+
+import com.google.gson.GsonBuilder;
+import net.minecraft.world.item.ItemStack;
+import java.util.Map;
+
+public class TrimmedArmorDTO extends EnchantedItemDTO {
+    private String material;
+    private String pattern;
+
+    public TrimmedArmorDTO(String itemId, String material, String pattern) {
+        super("trimmed_armor", itemId, 1);
+        this.material = material;
+        this.pattern = pattern;
+    }
+
+    public TrimmedArmorDTO(String itemId, Map<String, Integer> enchantments, String material, String pattern) {
+        super("trimmed_armor", itemId, 1, enchantments);
+        this.material = material;
+        this.pattern = pattern;
+    }
+
+    @Override
+    public ItemStack getItemStack() {
+        var itemStack = super.getItemStack();
+        // Armor trims are data components in 1.21; material/pattern ids are retained in this DTO for serialization.
+        return itemStack;
+    }
+
+    @Override
+    public String toJson() {
+        return new GsonBuilder().setPrettyPrinting().create().toJson(this, TrimmedArmorDTO.class);
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public String getMaterial() {
+        return this.material;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public String getPattern() {
+        return this.pattern;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public void setMaterial(final String material) {
+        this.material = material;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public void setPattern(final String pattern) {
+        this.pattern = pattern;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public TrimmedArmorDTO() {
+    }
+}
+

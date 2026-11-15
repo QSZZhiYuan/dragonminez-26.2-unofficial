@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "group": "gete_ingot",
+  "ingredients": [
+    "minecraft:netherite_scrap",
+    "minecraft:netherite_scrap",
+    "minecraft:netherite_scrap",
+    "minecraft:netherite_scrap",
+    "dragonminez:gete_scrap",
+    "dragonminez:gete_scrap",
+    "dragonminez:gete_scrap",
+    "dragonminez:gete_scrap"
+  ],
+  "result": {
+    "id": "dragonminez:gete_ingot"
+  }
+}

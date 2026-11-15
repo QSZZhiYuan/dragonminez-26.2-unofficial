@@ -1,0 +1,37 @@
+package com.dragonminez.common.quest.rewards;
+
+import com.dragonminez.common.quest.QuestReward;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import lombok.Getter;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
+
+@Getter
+public class SkillReward extends QuestReward {
+	private final String skill;
+	private final int level;
+
+	public SkillReward(String skill, int level) {
+		super(RewardType.SKILL);
+		this.skill = skill;
+		this.level = level;
+	}
+
+	@Override
+	public void giveReward(ServerPlayer player) {
+		StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+			if (data.getSkills().getSkillLevel(skill) < level) data.getSkills().setSkillLevel(skill, level);
+		});
+	}
+
+	@Override
+	public Component getDescription() {
+		return Component.translatable(
+				"gui.dragonminez.quests.rewards.skill",
+				Component.translatable("skill.dragonminez." + skill),
+				level
+		);
+	}
+}
+

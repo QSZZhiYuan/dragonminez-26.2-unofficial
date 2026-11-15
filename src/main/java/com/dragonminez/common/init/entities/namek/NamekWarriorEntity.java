@@ -1,0 +1,311 @@
+package com.dragonminez.common.init.entities.namek;
+
+import com.dragonminez.Reference;
+import com.dragonminez.common.init.entities.IBattlePower;
+import com.dragonminez.common.init.entities.goals.NamekDefendVillageGoal;
+import com.dragonminez.common.init.entities.goals.VillageAlertSystem;
+import com.dragonminez.common.init.entities.redribbon.RedRibbonEntity;
+import com.dragonminez.common.init.entities.sagas.DBSagasEntity;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.Difficulty;
+import net.minecraft.world.DifficultyInstance;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.*;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.*;
+import net.minecraft.world.entity.ai.goal.target.DefendVillageTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.npc.villager.Villager;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.enchantment.EnchantmentHelper;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelAccessor;
+import net.minecraft.world.level.ServerLevelAccessor;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import org.jetbrains.annotations.Nullable;
+import com.geckolib.animatable.GeoEntity;
+import com.geckolib.animatable.GeoAnimatable;
+import com.geckolib.animatable.instance.AnimatableInstanceCache;
+import com.geckolib.animatable.instance.SingletonAnimatableInstanceCache;
+import com.geckolib.animatable.manager.AnimatableManager;
+import com.geckolib.animation.AnimationController;
+import com.geckolib.animation.state.AnimationTest;
+import com.geckolib.animation.RawAnimation;
+import com.geckolib.animation.object.PlayState;
+
+public class NamekWarriorEntity extends PathfinderMob implements GeoEntity {
+
+    private final AnimatableInstanceCache geoCache = new SingletonAnimatableInstanceCache(this);
+    private boolean isAttacking = false;
+
+    private static final EntityDataAccessor<Integer> VARIANT = SynchedEntityData.defineId(NamekWarriorEntity.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Boolean> IS_FLYING = SynchedEntityData.defineId(NamekWarriorEntity.class, EntityDataSerializers.BOOLEAN);
+
+    public static final int VARIANT_COUNT = 4;
+
+    public static final Identifier[] TEXTURES = new Identifier[VARIANT_COUNT];
+
+    static {
+        for (int i = 0; i < VARIANT_COUNT; i++) {
+            TEXTURES[i] = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/entity/enemies/namek_warrior_" + i + ".png");
+        }
+    }
+
+    public NamekWarriorEntity(EntityType<? extends PathfinderMob> pEntityType, Level pLevel) {
+        super(pEntityType, pLevel);
+
+		if (this instanceof IBattlePower bp) {
+			bp.setBattlePower(750);
+		}
+    }
+
+    @Override
+    public void onAddedToLevel() {
+        super.onAddedToLevel();
+        if (!level().isClientSide()) VillageAlertSystem.registerWarrior(this);
+    }
+
+    @Override
+    public void onRemovedFromLevel() {
+        VillageAlertSystem.unregisterWarrior(this);
+        super.onRemovedFromLevel();
+    }
+
+    public static AttributeSupplier.Builder createAttributes() {
+        return Monster.createMobAttributes()
+                .add(Attributes.MAX_HEALTH, 200.0D)
+                .add(Attributes.MOVEMENT_SPEED, 0.20D)
+                .add(Attributes.ATTACK_DAMAGE, 15.0D)
+                .add(Attributes.FOLLOW_RANGE, 64.0D)
+                .add(Attributes.KNOCKBACK_RESISTANCE, 0.6D);
+
+    }
+
+    @Override
+    protected void registerGoals() {
+        this.goalSelector.addGoal(1, new FloatGoal(this));
+        this.goalSelector.addGoal(2, new MeleeAttackGoal(this, 1.9D, false));
+        this.goalSelector.addGoal(3, new WaterAvoidingRandomStrollGoal(this, 1.0D));
+        this.goalSelector.addGoal(4, new LookAtPlayerGoal(this, Player.class, 15.0F));
+        this.goalSelector.addGoal(5, new RandomLookAroundGoal(this));
+        this.goalSelector.addGoal(2, new MoveBackToVillageGoal(this, 1.0D, false));
+
+
+        //FALTA EL GOAL DE DETECTAR EL ALINEAMIENTO
+        this.targetSelector.addGoal(1, new NamekDefendVillageGoal(this));
+        this.targetSelector.addGoal(2, (new HurtByTargetGoal(this)));
+        // 26.2: NearestAttackableTargetGoal keeps the 4-arg (mob, type, mustSee, mustReach) form;
+        // 26.2: use the 4-argument (mob, type, mustSee, mustReach) form; the selector overload has a
+        // different parameter shape and the extra filtering is not required here.
+        this.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(this, Monster.class, false, false));
+    }
+
+    @Override
+    protected void defineSynchedData(net.minecraft.network.syncher.SynchedEntityData.Builder builder) {
+        super.defineSynchedData(builder);
+        builder.define(VARIANT, 0);
+        builder.define(IS_FLYING, false);
+
+    }
+
+    @Override
+    public void addAdditionalSaveData(net.minecraft.world.level.storage.ValueOutput pCompound) {
+        super.addAdditionalSaveData(pCompound);
+        pCompound.putInt("Variant", getVariantNamek());
+    }
+
+    @Override
+    public void readAdditionalSaveData(net.minecraft.world.level.storage.ValueInput pCompound) {
+        super.readAdditionalSaveData(pCompound);
+        setVariantNamek(pCompound.getIntOr("Variant", 0));
+    }
+
+    public int getVariantNamek() {return this.entityData.get(VARIANT);}
+    public void setVariantNamek(int variant) {this.entityData.set(VARIANT, variant);}
+
+    public void setFlying(boolean flying) { this.entityData.set(IS_FLYING, flying); }
+    public boolean isFlying() { return this.entityData.get(IS_FLYING); }
+
+
+    public Identifier getCurrentTexture() {
+        int variant = getVariantNamek();
+        if (variant < 0 || variant >= TEXTURES.length) {
+            variant = 0;
+        }
+        return TEXTURES[variant];
+    }
+
+    @Override
+    public boolean causeFallDamage(double pFallDistance, float pMultiplier, DamageSource pSource) {
+        return false;
+    }
+
+    @Override
+    public @Nullable SpawnGroupData finalizeSpawn(ServerLevelAccessor pLevel, DifficultyInstance pDifficulty, EntitySpawnReason pReason, @Nullable SpawnGroupData pSpawnData) {
+        this.setVariantNamek(this.random.nextInt(VARIANT_COUNT));
+        return super.finalizeSpawn(pLevel, pDifficulty, pReason, pSpawnData);
+    }
+
+    @Override
+    public void remove(RemovalReason reason) {
+        super.remove(reason);
+        VillageAlertSystem.unregisterWarrior(this);
+    }
+
+    @Override
+    public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
+        controllers.add(new AnimationController<>("base_controller", 5, this::walkPredicate));
+        controllers.add(new AnimationController<>("attack_controller", 0, this::attackPredicate));
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+
+        LivingEntity target = this.getTarget();
+
+        if (target != null && target.isAlive()) {
+            if (this.isFlying()) {
+                rotateBodyToTarget(target);
+            }
+        }
+
+        if (!this.level().isClientSide()) {
+            if (target != null && target.isAlive()) {
+                double yDiff = target.getY() - this.getY();
+                if (yDiff > 2.0D) {
+                    if (!isFlying()) setFlying(true);
+                } else if (yDiff <= 1.0D && this.onGround()) {
+                    if (isFlying()) {
+                        setFlying(false);
+                        this.setNoGravity(false);
+                    }
+                }
+            } else {
+                if (this.onGround() && isFlying()) {
+                    setFlying(false);
+                    this.setNoGravity(false);
+                }
+            }
+            if (this.isFlying()) {
+                this.setNoGravity(true);
+                if (target != null) {
+                    moveTowardsTargetInAir(target);
+                } else {
+                    this.setDeltaMovement(this.getDeltaMovement().add(0, -0.03D, 0));
+                }
+            } else {
+                this.setNoGravity(false);
+            }
+        }
+    }
+    private void rotateBodyToTarget(LivingEntity target) {
+        double d0 = target.getX() - this.getX();
+        double d2 = target.getZ() - this.getZ();
+        float targetYaw = (float)(Mth.atan2(d2, d0) * (double)(180F / (float)Math.PI)) - 90.0F;
+        this.setYRot(targetYaw);
+        this.setYBodyRot(targetYaw);
+        this.setYHeadRot(targetYaw);
+        this.yRotO = targetYaw;
+        this.yBodyRotO = targetYaw;
+        this.yHeadRotO = targetYaw;
+    }
+    private void moveTowardsTargetInAir(LivingEntity target) {
+        double flyspeed = 0.65;
+        double dx = target.getX() - this.getX();
+        double dy = (target.getY() + 1.0D) - this.getY();
+        double dz = target.getZ() - this.getZ();
+        double distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+        if (distance < 1.0) return;
+        Vec3 movement = new Vec3(dx / distance * flyspeed, dy / distance * flyspeed, dz / distance * flyspeed);
+        double gravityDrag = (dy < -0.5) ? -0.05D : -0.03D;
+        this.setDeltaMovement(movement.add(0, gravityDrag, 0));
+    }
+
+    private <T extends GeoAnimatable> PlayState walkPredicate(com.geckolib.animation.state.AnimationTest<T> event) {
+        NamekWarriorEntity entity = (NamekWarriorEntity) event.animatable();
+
+        if (entity.isFlying()) {
+            event.setAnimation(RawAnimation.begin().thenLoop("fly"));
+            return PlayState.CONTINUE;
+        }
+
+        if (event.isMoving()) {
+            if (entity.isAggressive() || entity.getTarget() != null) {
+                event.setAnimation(RawAnimation.begin().thenLoop("run"));
+            } else {
+                event.setAnimation(RawAnimation.begin().thenLoop("walk"));
+            }
+            return PlayState.CONTINUE;
+        }
+
+        event.setAnimation(RawAnimation.begin().thenLoop("idle"));
+        return PlayState.CONTINUE;
+    }
+
+    private <T extends GeoAnimatable> PlayState attackPredicate(AnimationTest<T> event) {
+        NamekWarriorEntity entity = (NamekWarriorEntity) event.animatable();
+
+        if (entity.swingTime > 0 && !isAttacking) {
+            isAttacking = true;
+            event.controller().reset();
+            if (this.random.nextBoolean()) {
+                event.setAnimation(RawAnimation.begin().thenPlay("attack1"));
+            } else {
+                event.setAnimation(RawAnimation.begin().thenPlay("attack2"));
+            }
+            return PlayState.CONTINUE;
+        }
+
+        if (isAttacking) {
+            if (event.controller().hasAnimationFinished()) {
+                isAttacking = false;
+                return PlayState.STOP;
+            }
+            return PlayState.CONTINUE;
+        }
+
+        return PlayState.STOP;
+    }
+
+    @Override
+    public AnimatableInstanceCache getAnimatableInstanceCache() {
+        return geoCache;
+    }
+
+    @Override
+    public boolean checkSpawnRules(LevelAccessor pLevel, EntitySpawnReason reason) {
+        return true;
+    }
+
+    public static boolean canSpawnHere(EntityType<? extends NamekWarriorEntity> entity, ServerLevelAccessor world, EntitySpawnReason spawn, BlockPos pos, RandomSource random) {
+        if (world.getDifficulty() == Difficulty.PEACEFUL) return false;
+
+        BlockState stateAtPos = world.getBlockState(pos);
+        if (!stateAtPos.isAir() && !stateAtPos.canBeReplaced()) {
+            return false;
+        }
+
+        BlockState ground = world.getBlockState(pos.below());
+        if (!ground.isFaceSturdy(world, pos.below(), Direction.UP)) {
+            return false;
+        }
+        return world.noCollision(entity.getDimensions().makeBoundingBox(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5));
+    }
+}
+

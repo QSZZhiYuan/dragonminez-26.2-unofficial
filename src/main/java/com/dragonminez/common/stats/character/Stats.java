@@ -1,0 +1,330 @@
+package com.dragonminez.common.stats.character;
+
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.events.DMZEvent;
+import com.dragonminez.common.init.MainAttributes;
+import net.minecraft.core.Holder;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.world.entity.ai.attributes.Attribute;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
+import net.minecraft.world.entity.player.Player;
+import net.neoforged.neoforge.common.NeoForge;
+
+/**
+ * Main combat stats (STR/SKP/RES/VIT/PWR/ENE).
+ *
+ * <p><b>Authoritative storage is the int fields</b> written to NBT under those keys.
+ * Attribute base values on the player are a live mirror so combat/UI can read
+ * {@link MainAttributes}. On NeoForge, attachment deserialize can run before attributes
+ * exist — field-backed save/load keeps VIT/PWR/ENE from being silently dropped when
+ * {@link AttributeInstance} is null during {@link #load(CompoundTag)}.
+ */
+public class Stats {
+	private Player player;
+
+	private int strength;
+	private int strikePower;
+	private int resistance;
+	private int vitality;
+	private int kiPower;
+	private int energy;
+
+	public Stats() {
+	}
+
+	private int clampStatValue(int value) {
+		int min = 0;
+		int capped = Math.max(min, value);
+		if (ConfigManager.getServerConfig() == null || ConfigManager.getServerConfig().getGameplay() == null) {
+			return capped;
+		}
+		int max = ConfigManager.getServerConfig().getGameplay().getAttributeValueLimit();
+		return Math.min(capped, max);
+	}
+
+	private int safeAdd(int base, int delta) {
+		long result = (long) base + delta;
+		if (result > Integer.MAX_VALUE) return Integer.MAX_VALUE;
+		if (result < Integer.MIN_VALUE) return Integer.MIN_VALUE;
+		return (int) result;
+	}
+
+	/**
+	 * LivingEntity attributes are not available during super-constructor (Entity size events).
+	 * Never call {@link LivingEntity#getAttribute} until the map exists.
+	 */
+	private boolean attributesReady() {
+		return player != null && player.getAttributes() != null;
+	}
+
+	private void setAttributeBaseValue(Holder<Attribute> attribute, int value) {
+		if (!attributesReady()) return;
+		AttributeInstance instance = player.getAttribute(attribute);
+		if (instance == null) return;
+		// Full field value (up to maxValue). Skip no-op to avoid dirty attribute sync every tick.
+		if (Math.abs(instance.getBaseValue() - value) < 0.5D) return;
+		instance.setBaseValue(value);
+	}
+
+	/** Push field values onto player attributes when instances exist (safe to call often). */
+	public void applyToAttributes() {
+		if (!attributesReady()) return;
+		setAttributeBaseValue(MainAttributes.STRENGTH, strength);
+		setAttributeBaseValue(MainAttributes.STRIKE_POWER, strikePower);
+		setAttributeBaseValue(MainAttributes.RESISTANCE, resistance);
+		setAttributeBaseValue(MainAttributes.VITALITY, vitality);
+		setAttributeBaseValue(MainAttributes.KI_POWER, kiPower);
+		setAttributeBaseValue(MainAttributes.ENERGY, energy);
+	}
+
+	/**
+	 * If attributes already have bases and fields are still zero after a cold construct
+	 * (e.g. only vanilla attribute NBT restored), adopt attribute bases once.
+	 */
+	public void pullFromAttributesIfFieldsEmpty() {
+		if (player == null) return;
+		if (strength != 0 || strikePower != 0 || resistance != 0
+				|| vitality != 0 || kiPower != 0 || energy != 0) {
+			return;
+		}
+		strength = readAttributeBase(MainAttributes.STRENGTH, 0);
+		strikePower = readAttributeBase(MainAttributes.STRIKE_POWER, 0);
+		resistance = readAttributeBase(MainAttributes.RESISTANCE, 0);
+		vitality = readAttributeBase(MainAttributes.VITALITY, 0);
+		kiPower = readAttributeBase(MainAttributes.KI_POWER, 0);
+		energy = readAttributeBase(MainAttributes.ENERGY, 0);
+	}
+
+	private int readAttributeBase(Holder<Attribute> attribute, int fallback) {
+		if (!attributesReady()) return fallback;
+		AttributeInstance instance = player.getAttribute(attribute);
+		if (instance == null) return fallback;
+		return (int) Math.round(instance.getBaseValue());
+	}
+
+	public int getStrength() {
+		return strength;
+	}
+
+	public int getStrikePower() {
+		return strikePower;
+	}
+
+	public int getResistance() {
+		return resistance;
+	}
+
+	public int getVitality() {
+		return vitality;
+	}
+
+	public int getKiPower() {
+		return kiPower;
+	}
+
+	public int getEnergy() {
+		return energy;
+	}
+
+	public void setStrength(int value) {
+		int oldValue = strength;
+		int newValue = clampStatValue(value);
+		if (oldValue != newValue && player != null) {
+			DMZEvent.StatChangeEvent event = new DMZEvent.StatChangeEvent(
+					player, DMZEvent.StatChangeEvent.StatType.STRENGTH, oldValue, newValue);
+			if (!NeoForge.EVENT_BUS.post(event).isCanceled()) {
+				strength = newValue;
+				setAttributeBaseValue(MainAttributes.STRENGTH, newValue);
+			}
+		} else {
+			strength = newValue;
+			if (player != null) setAttributeBaseValue(MainAttributes.STRENGTH, newValue);
+		}
+	}
+
+	public void setStrikePower(int value) {
+		int oldValue = strikePower;
+		int newValue = clampStatValue(value);
+		if (oldValue != newValue && player != null) {
+			DMZEvent.StatChangeEvent event = new DMZEvent.StatChangeEvent(
+					player, DMZEvent.StatChangeEvent.StatType.STRIKE_POWER, oldValue, newValue);
+			if (!NeoForge.EVENT_BUS.post(event).isCanceled()) {
+				strikePower = newValue;
+				setAttributeBaseValue(MainAttributes.STRIKE_POWER, newValue);
+			}
+		} else {
+			strikePower = newValue;
+			if (player != null) setAttributeBaseValue(MainAttributes.STRIKE_POWER, newValue);
+		}
+	}
+
+	public void setResistance(int value) {
+		int oldValue = resistance;
+		int newValue = clampStatValue(value);
+		if (oldValue != newValue && player != null) {
+			DMZEvent.StatChangeEvent event = new DMZEvent.StatChangeEvent(
+					player, DMZEvent.StatChangeEvent.StatType.RESISTANCE, oldValue, newValue);
+			if (!NeoForge.EVENT_BUS.post(event).isCanceled()) {
+				resistance = newValue;
+				setAttributeBaseValue(MainAttributes.RESISTANCE, newValue);
+			}
+		} else {
+			resistance = newValue;
+			if (player != null) setAttributeBaseValue(MainAttributes.RESISTANCE, newValue);
+		}
+	}
+
+	public void setVitality(int value) {
+		int oldValue = vitality;
+		int newValue = clampStatValue(value);
+		if (oldValue != newValue && player != null) {
+			DMZEvent.StatChangeEvent event = new DMZEvent.StatChangeEvent(
+					player, DMZEvent.StatChangeEvent.StatType.VITALITY, oldValue, newValue);
+			if (!NeoForge.EVENT_BUS.post(event).isCanceled()) {
+				vitality = newValue;
+				setAttributeBaseValue(MainAttributes.VITALITY, newValue);
+			}
+		} else {
+			vitality = newValue;
+			if (player != null) setAttributeBaseValue(MainAttributes.VITALITY, newValue);
+		}
+	}
+
+	public void setKiPower(int value) {
+		int oldValue = kiPower;
+		int newValue = clampStatValue(value);
+		if (oldValue != newValue && player != null) {
+			DMZEvent.StatChangeEvent event = new DMZEvent.StatChangeEvent(
+					player, DMZEvent.StatChangeEvent.StatType.KI_POWER, oldValue, newValue);
+			if (!NeoForge.EVENT_BUS.post(event).isCanceled()) {
+				kiPower = newValue;
+				setAttributeBaseValue(MainAttributes.KI_POWER, newValue);
+			}
+		} else {
+			kiPower = newValue;
+			if (player != null) setAttributeBaseValue(MainAttributes.KI_POWER, newValue);
+		}
+	}
+
+	public void setEnergy(int value) {
+		int oldValue = energy;
+		int newValue = clampStatValue(value);
+		if (oldValue != newValue && player != null) {
+			DMZEvent.StatChangeEvent event = new DMZEvent.StatChangeEvent(
+					player, DMZEvent.StatChangeEvent.StatType.ENERGY, oldValue, newValue);
+			if (!NeoForge.EVENT_BUS.post(event).isCanceled()) {
+				energy = newValue;
+				setAttributeBaseValue(MainAttributes.ENERGY, newValue);
+			}
+		} else {
+			energy = newValue;
+			if (player != null) setAttributeBaseValue(MainAttributes.ENERGY, newValue);
+		}
+	}
+
+	public void addStrength(int amount) {
+		setStrength(safeAdd(getStrength(), amount));
+	}
+
+	public void addStrikePower(int amount) {
+		setStrikePower(safeAdd(getStrikePower(), amount));
+	}
+
+	public void addResistance(int amount) {
+		setResistance(safeAdd(getResistance(), amount));
+	}
+
+	public void addVitality(int amount) {
+		setVitality(safeAdd(getVitality(), amount));
+	}
+
+	public void addKiPower(int amount) {
+		setKiPower(safeAdd(getKiPower(), amount));
+	}
+
+	public void addEnergy(int amount) {
+		setEnergy(safeAdd(getEnergy(), amount));
+	}
+
+	public void setStat(String statName, int value) {
+		switch (statName.toLowerCase()) {
+			case "str" -> setStrength(value);
+			case "skp" -> setStrikePower(value);
+			case "res" -> setResistance(value);
+			case "vit" -> setVitality(value);
+			case "pwr" -> setKiPower(value);
+			case "ene" -> setEnergy(value);
+			default -> throw new IllegalArgumentException("Unknown stat: " + statName);
+		}
+	}
+
+	public void addStat(String statName, int amount) {
+		switch (statName.toLowerCase()) {
+			case "str" -> addStrength(amount);
+			case "skp" -> addStrikePower(amount);
+			case "res" -> addResistance(amount);
+			case "vit" -> addVitality(amount);
+			case "pwr" -> addKiPower(amount);
+			case "ene" -> addEnergy(amount);
+			default -> throw new IllegalArgumentException("Unknown stat: " + statName);
+		}
+	}
+
+	public void removeStat(String statName, int amount) {
+		addStat(statName, -amount);
+	}
+
+	public int getTotalStats() {
+		long total = getTotalStatsLong();
+		return total > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+	}
+
+	public long getTotalStatsLong() {
+		return (long) getStrength() + getStrikePower() + getResistance()
+				+ getVitality() + getKiPower() + getEnergy();
+	}
+
+	public CompoundTag save() {
+		applyToAttributes();
+		CompoundTag tag = new CompoundTag();
+		tag.putInt("STR", strength);
+		tag.putInt("SKP", strikePower);
+		tag.putInt("RES", resistance);
+		tag.putInt("VIT", vitality);
+		tag.putInt("PWR", kiPower);
+		tag.putInt("ENE", energy);
+		return tag;
+	}
+
+	public void load(CompoundTag tag) {
+		// Field-first: works even when AttributeInstances are not ready yet (NeoForge attach).
+		strength = clampStatValue(tag.getIntOr("STR", 0));
+		strikePower = clampStatValue(tag.getIntOr("SKP", 0));
+		resistance = clampStatValue(tag.getIntOr("RES", 0));
+		vitality = clampStatValue(tag.getIntOr("VIT", 0));
+		kiPower = clampStatValue(tag.getIntOr("PWR", 0));
+		energy = clampStatValue(tag.getIntOr("ENE", 0));
+		applyToAttributes();
+	}
+
+	public void copyFrom(Stats other) {
+		this.strength = other.strength;
+		this.strikePower = other.strikePower;
+		this.resistance = other.resistance;
+		this.vitality = other.vitality;
+		this.kiPower = other.kiPower;
+		this.energy = other.energy;
+		applyToAttributes();
+	}
+
+	public void setPlayer(final Player player) {
+		this.player = player;
+		// Attachment/construct order: player may become available after NBT load.
+		applyToAttributes();
+	}
+
+	public Player getPlayer() {
+		return this.player;
+	}
+}
+

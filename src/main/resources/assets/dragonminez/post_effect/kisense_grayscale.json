@@ -1,0 +1,31 @@
+{
+  "targets": {
+    "dragonminez:ki_swap": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dragonminez:kisense_grayscale",
+      "inputs": [
+        {
+          "sampler_name": "Diffuse",
+          "target": "minecraft:main",
+          "bilinear": true
+        }
+      ],
+      "output": "dragonminez:ki_swap"
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dragonminez:post_copy",
+      "inputs": [
+        {
+          "sampler_name": "Diffuse",
+          "target": "dragonminez:ki_swap",
+          "bilinear": true
+        }
+      ],
+      "output": "minecraft:main"
+    }
+  ]
+}

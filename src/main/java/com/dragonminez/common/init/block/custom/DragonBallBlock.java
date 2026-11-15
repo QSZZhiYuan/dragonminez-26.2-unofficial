@@ -1,0 +1,230 @@
+package com.dragonminez.common.init.block.custom;
+
+import com.mojang.serialization.MapCodec;
+import com.mojang.serialization.Codec;
+import com.mojang.serialization.codecs.RecordCodecBuilder;
+
+import com.dragonminez.common.dragonball.DragonBallDefinitions;
+import com.dragonminez.common.dragonball.DragonBallSetDefinition;
+import com.dragonminez.common.dragonball.DragonDefinition;
+import com.dragonminez.common.events.DMZEvent;
+import com.dragonminez.common.init.MainSounds;
+import com.dragonminez.common.init.block.entity.DragonBallBlockEntity;
+import com.dragonminez.server.events.DragonBallsHandler;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LevelReader;
+import net.minecraft.world.level.block.*;
+import net.minecraft.world.level.block.state.BlockBehaviour;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.StateDefinition;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.level.block.state.properties.EnumProperty;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.Shapes;
+import net.minecraft.world.phys.shapes.VoxelShape;
+import net.neoforged.neoforge.common.NeoForge;
+import net.minecraft.core.registries.BuiltInRegistries;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
+public class DragonBallBlock extends BaseEntityBlock implements EntityBlock {
+	private static final Codec<DragonBallType> BALL_TYPE_CODEC = Codec.intRange(1, 7)
+			.xmap(stars -> DragonBallType.values()[stars - 1], DragonBallType::getStars);
+	public static final MapCodec<DragonBallBlock> CODEC = RecordCodecBuilder.mapCodec(instance -> instance.group(
+			propertiesCodec(),
+			BALL_TYPE_CODEC.fieldOf("ball_type").forGetter(DragonBallBlock::getBallType),
+			Codec.STRING.fieldOf("ball_set").forGetter(DragonBallBlock::getBallSetId)
+	).apply(instance, DragonBallBlock::new));
+
+	@Override
+	protected MapCodec<? extends BaseEntityBlock> codec() {
+		return CODEC;
+	}
+
+	private static final VoxelShape SHAPE = Shapes.box(0.25D, 0.0D, 0.25D, 0.75D, 0.5D, 0.75D);
+
+    public static final EnumProperty<Direction> FACING = BlockStateProperties.HORIZONTAL_FACING;
+
+	private final DragonBallType ballType;
+	private final String ballSetId;
+
+	public DragonBallBlock(BlockBehaviour.Properties properties, DragonBallType ballType, String ballSetId) {
+		super(properties);
+		this.ballType = ballType;
+		this.ballSetId = ballSetId;
+
+        this.registerDefaultState(this.stateDefinition.any().setValue(FACING, Direction.NORTH));
+	}
+
+    @Override
+    protected void createBlockStateDefinition(StateDefinition.Builder<Block, BlockState> builder) {
+        builder.add(FACING);
+    }
+
+    @Nullable
+    @Override
+    public BlockState getStateForPlacement(BlockPlaceContext context) {
+        return this.defaultBlockState().setValue(FACING, context.getHorizontalDirection().getOpposite());
+    }
+
+    @Override
+    public BlockState rotate(BlockState state, Rotation rot) {
+        return state.setValue(FACING, rot.rotate(state.getValue(FACING)));
+    }
+
+    @Override
+    public BlockState mirror(BlockState state, Mirror mirrorIn) {
+        return state.rotate(mirrorIn.getRotation(state.getValue(FACING)));
+    }
+
+	public DragonBallType getBallType() {
+		return ballType;
+	}
+
+	public String getBallSetId() {
+		return ballSetId;
+	}
+
+	public boolean isNamekian() {
+		return "namek".equals(ballSetId);
+	}
+
+	@Override
+	protected void onPlace(BlockState state, Level level, BlockPos pos, BlockState oldState, boolean movedByPiston) {
+		super.onPlace(state, level, pos, oldState, movedByPiston);
+		if (level instanceof ServerLevel server && oldState.getBlock() != this)
+			DragonBallsHandler.updateBallIndex(server, pos, this, true);
+	}
+
+	@Override
+	protected void affectNeighborsAfterRemoval(BlockState state, ServerLevel level, BlockPos pos, boolean movedByPiston) {
+		super.affectNeighborsAfterRemoval(state, level, pos, movedByPiston);
+		if (level.getBlockState(pos).getBlock() != this)
+			DragonBallsHandler.updateBallIndex(level, pos, this, false);
+	}
+
+	@Override
+	public RenderShape getRenderShape(BlockState state) {
+		return RenderShape.INVISIBLE;
+	}
+
+	@Override
+	public VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
+		return SHAPE;
+	}
+
+	@Override
+	public boolean canSurvive(BlockState state, LevelReader level, BlockPos pos) {
+		return !level.isEmptyBlock(pos.below());
+	}
+
+	@Nullable
+	@Override
+	public BlockEntity newBlockEntity(BlockPos pos, BlockState state) {
+		return new DragonBallBlockEntity(pos, state, ballType, ballSetId);
+	}
+
+	@Override
+	public InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player, BlockHitResult hit) {
+		if (level.isClientSide()) {
+			return InteractionResult.SUCCESS;
+		}
+
+		DragonBallSetDefinition ballSetDefinition = DragonBallDefinitions.getBallSet(ballSetId);
+		if (ballSetDefinition == null || !ballSetDefinition.supportsDimension(level.dimension())) {
+			return InteractionResult.PASS;
+		}
+
+		DragonDefinition dragonDefinition = DragonBallDefinitions.getDragonForSetAndDimension(ballSetId, level.dimension());
+		if (dragonDefinition == null) {
+			return InteractionResult.PASS;
+		}
+
+		if (areAllDragonBallsNearby(level, pos, ballSetDefinition)) {
+			List<BlockPos> consumedPositions = removeAllDragonBalls(level, pos, ballSetDefinition);
+			if (level instanceof ServerLevel serverLevel) {
+				DragonBallsHandler.unregisterConsumedDragonBalls(serverLevel, consumedPositions, ballSetId);
+				if (summonDragon(serverLevel, pos, player, dragonDefinition)) {
+					NeoForge.EVENT_BUS.post(new DMZEvent.DragonSummonedEvent(
+							player,
+							serverLevel,
+							pos,
+							dragonDefinition,
+							ballSetDefinition,
+							consumedPositions
+					));
+					serverLevel.playSound(null, pos, MainSounds.SHENRON.get(), SoundSource.AMBIENT, 1.0F, 1.0F);
+				}
+			}
+			return InteractionResult.CONSUME;
+		}
+
+		return InteractionResult.PASS;
+	}
+
+	private boolean summonDragon(ServerLevel serverLevel, BlockPos pos, Player player, DragonDefinition dragonDefinition) {
+		EntityType<?> entityType = BuiltInRegistries.ENTITY_TYPE.get(Identifier.fromNamespaceAndPath("dragonminez", dragonDefinition.getId())).map(net.minecraft.core.Holder::value).orElse(null);
+		if (entityType == null) {
+			return false;
+		}
+
+		var entity = entityType.create(serverLevel, net.minecraft.world.entity.EntitySpawnReason.EVENT);
+		if (!(entity instanceof com.dragonminez.common.init.entities.dragon.DragonWishEntity dragon)) {
+			return false;
+		}
+
+		dragon.setDragonDefinitionId(dragonDefinition.getId());
+		dragon.setOwnerName(player.getName().getString());
+		dragon.setInvokingTime(serverLevel.getOverworldClockTime());
+		dragon.setGrantedWish(false);
+		dragon.absSnapTo(pos.getX() + 0.5, pos.getY(), pos.getZ() + 0.5, 0.0F, 0.0F);
+		return serverLevel.addFreshEntity(dragon);
+	}
+
+	private boolean areAllDragonBallsNearby(Level level, BlockPos pos, DragonBallSetDefinition setDefinition) {
+		Set<DragonBallType> foundBalls = new HashSet<>();
+		int radius = setDefinition.getSummonRadius();
+		for (BlockPos checkPos : BlockPos.betweenClosed(pos.offset(-radius, -radius, -radius), pos.offset(radius, radius, radius))) {
+			Block block = level.getBlockState(checkPos).getBlock();
+			if (block instanceof DragonBallBlock dragonBall && ballSetId.equals(dragonBall.getBallSetId())) {
+				foundBalls.add(dragonBall.getBallType());
+			}
+		}
+		return foundBalls.size() == 7;
+	}
+
+	private List<BlockPos> removeAllDragonBalls(Level level, BlockPos pos, DragonBallSetDefinition setDefinition) {
+		Set<DragonBallType> removedBalls = new HashSet<>();
+		List<BlockPos> removedPositions = new ArrayList<>();
+		int radius = setDefinition.getSummonRadius();
+		for (BlockPos checkPos : BlockPos.betweenClosed(pos.offset(-radius, -radius, -radius), pos.offset(radius, radius, radius))) {
+			Block block = level.getBlockState(checkPos).getBlock();
+			if (block instanceof DragonBallBlock dragonBall && ballSetId.equals(dragonBall.getBallSetId())) {
+				if (!removedBalls.contains(dragonBall.getBallType())) {
+					level.removeBlock(checkPos, false);
+					removedBalls.add(dragonBall.getBallType());
+					removedPositions.add(checkPos.immutable());
+				}
+			}
+		}
+		return removedPositions;
+	}
+}
+

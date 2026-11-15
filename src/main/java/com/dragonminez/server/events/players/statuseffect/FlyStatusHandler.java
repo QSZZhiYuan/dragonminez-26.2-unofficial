@@ -1,0 +1,114 @@
+package com.dragonminez.server.events.players.statuseffect;
+
+import net.minecraft.server.level.ServerLevel;
+
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.init.MainEffects;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.network.S2C.ProgressionSyncS2C;
+import com.dragonminez.common.network.S2C.StatsSyncS2C;
+import com.dragonminez.common.stats.StatsData;
+import com.dragonminez.common.stats.character.Cooldowns;
+import com.dragonminez.common.stats.character.Status;
+import com.dragonminez.server.events.players.IStatusEffectHandler;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
+import net.minecraft.world.effect.MobEffectInstance;
+
+public class FlyStatusHandler implements IStatusEffectHandler {
+    @Override
+    public void handleStatusEffects(ServerPlayer player, StatsData data) {
+        if (data.getSkills().isSkillActive("fly")) {
+            if (!player.hasEffect(MainEffects.FLY)) {
+                player.addEffect(com.dragonminez.common.util.MobEffectCompatibility.create(MainEffects.FLY, -1, 0, false, false, true));
+            }
+        } else {
+            player.removeEffect(MainEffects.FLY);
+        }
+    }
+
+    @Override
+    public void onPlayerTick(ServerPlayer serverPlayer, StatsData data) {
+        restoreLockedFlightMode(serverPlayer, data);
+
+        if (data.getSkills().isSkillActive("fly") && !serverPlayer.isCreative() && !serverPlayer.isSpectator()) {
+            serverPlayer.resetFallDistance();
+
+            if (serverPlayer.horizontalCollision) {
+                double dx = serverPlayer.getX() - serverPlayer.xOld;
+                double dz = serverPlayer.getZ() - serverPlayer.zOld;
+                double speed = Math.sqrt(dx * dx + dz * dz);
+                double minImpactSpeed = 0.35D;
+
+                if (speed > minImpactSpeed) {
+                    float maxHealth = serverPlayer.getMaxHealth();
+                    double maxImpactSpeedRef = 1.5D;
+                    double factor = (speed - minImpactSpeed) / (maxImpactSpeedRef - minImpactSpeed);
+                    factor = Mth.clamp(factor, 0.0, 1.0);
+                    float finalPct = (float) Mth.lerp(factor, 0.05f, 0.35f);
+                    float damage = maxHealth * finalPct;
+                    serverPlayer.hurtServer(serverPlayer.level(), serverPlayer.damageSources().flyIntoWall(), damage);
+                    serverPlayer.level().playSound(null, serverPlayer.getX(), serverPlayer.getY(), serverPlayer.getZ(), SoundEvents.PLAYER_HURT, SoundSource.PLAYERS, 1.0F, (float) (0.5F + (factor * 0.5F)));
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onPlayerSecond(ServerPlayer serverPlayer, StatsData data) {
+        handleFlightKiDrain(serverPlayer, data);
+    }
+
+    private static void restoreLockedFlightMode(ServerPlayer player, StatsData data) {
+        Status status = data.getStatus();
+        int lockedMode = status.getLockedFlightMode();
+        if (!status.isFlightModeLocked()
+                || (lockedMode != Status.FLIGHT_SEARCH && lockedMode != Status.FLIGHT_COMBAT)
+                || status.getFlightMode() == lockedMode
+                || data.getCooldowns().hasCooldown(Cooldowns.COMBAT_FLY_LOCK)) return;
+
+        status.setFlightMode(lockedMode);
+        NetworkHandler.sendToTrackingEntityAndSelf(new StatsSyncS2C(player), player);
+    }
+
+    private static void handleFlightKiDrain(ServerPlayer player, StatsData data) {
+        if (!data.getSkills().isSkillActive("fly")) return;
+        if (player.isCreative() || player.isSpectator()) return;
+
+        int flyLevel = data.getSkills().getSkillLevel("fly");
+        float baseCost  = (float) ConfigManager.getCombatConfig().getBaselineFormDrain() / 4;
+
+        double basePercent = 0.03;
+        double energyCostPercent = Math.max(0.002, basePercent - (flyLevel * 0.005));
+        energyCostPercent *= getFlyCostMultiplier(flyLevel);
+        boolean isSprintFlight = player.isSprinting() && player.getDeltaMovement().length() > 0.65F;
+        if (isSprintFlight) energyCostPercent *= 2.0;
+        if (data.getStatus().getFlightMode() == Status.FLIGHT_COMBAT) {
+            energyCostPercent *= ConfigManager.getCombatConfig().getCombatFlyDrainMultiplier();
+        }
+        int energyCost = (int) Math.ceil(baseCost * energyCostPercent);
+
+        float currentEnergy = data.getResources().getCurrentEnergy();
+
+        if (currentEnergy >= energyCost) {
+            data.getResources().removeEnergy(energyCost);
+        } else {
+            data.getSkills().setSkillActive("fly", false);
+            if (!player.isCreative() && !player.isSpectator()) {
+                player.getAbilities().mayfly = false;
+                player.getAbilities().flying = false;
+                player.onUpdateAbilities();
+            }
+            NetworkHandler.sendToTrackingEntityAndSelf(new ProgressionSyncS2C(player), player);
+        }
+    }
+
+    private static float getFlyCostMultiplier(int flyLevel) {
+        int clampedLevel = Mth.clamp(flyLevel, 1, 10);
+        float t = (clampedLevel - 1) / (float) (10 - 1);
+        return Mth.lerp(t, 4.0F, 1.0F);
+    }
+}
+

@@ -1,0 +1,128 @@
+package com.dragonminez.client.gui.character.minigames;
+
+import com.dragonminez.client.util.KeyBinds;
+import com.dragonminez.client.util.TextUtil;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.config.TrainingConfig;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import org.lwjgl.glfw.GLFW;
+
+import java.util.Random;
+
+public class ControlGameScreen extends BaseMinigameScreen {
+
+	private static final int DIR_CHANGE_INTERVAL_TICKS = 30;
+
+	private final Random random = new Random();
+
+	private TrainingConfig.ControlConfig cfg;
+
+	private int barLeft, barRight, barY;
+	private float cursorX;
+	private float zoneMid;
+	private int zoneDir = 1;
+	private int dirChangeTimer = DIR_CHANGE_INTERVAL_TICKS;
+	private int zoneWidth;
+	private double holdProgress;
+	private int levelTicksLeft;
+
+	public ControlGameScreen() {
+		super("control", "gui.dragonminez.minigame.control");
+	}
+
+	@Override
+	protected void init() {
+		super.init();
+		this.cfg = ConfigManager.getTrainingConfig().getControl();
+		int cx = this.width / 2;
+		this.barLeft = cx - cfg.getBarWidth() / 2;
+		this.barRight = cx + cfg.getBarWidth() / 2;
+		this.barY = this.height / 2;
+		this.cursorX = cx;
+		this.zoneMid = cx;
+		this.zoneWidth = cfg.getBaseZoneWidth();
+		this.holdProgress = 0;
+		this.levelTicksLeft = cfg.getLevelTimeLimitTicks();
+	}
+
+	private double zoneSpeed() {
+		return cfg.getBaseZoneSpeed() + (levelsCleared * cfg.getZoneSpeedPerLevel());
+	}
+
+	@Override
+	protected void tickGame() {
+		levelTicksLeft--;
+		if (levelTicksLeft <= 0) {
+			endGame();
+			return;
+		}
+
+		if (--dirChangeTimer <= 0) {
+			dirChangeTimer = DIR_CHANGE_INTERVAL_TICKS;
+			if (random.nextBoolean()) zoneDir = -zoneDir;
+		}
+
+		float half = zoneWidth / 2.0f;
+		zoneMid += (float) (zoneDir * zoneSpeed());
+		if (zoneMid - half <= barLeft) {
+			zoneMid = barLeft + half;
+			zoneDir = 1;
+		} else if (zoneMid + half >= barRight) {
+			zoneMid = barRight - half;
+			zoneDir = -1;
+		}
+
+		long window = Minecraft.getInstance().getWindow().handle();
+		boolean left = isHeld(window, GLFW.GLFW_KEY_LEFT) || isHeld(window, GLFW.GLFW_KEY_A) || isHeld(window, KeyBinds.RHYTHM_LEFT.getKey().getValue());
+		boolean right = isHeld(window, GLFW.GLFW_KEY_RIGHT) || isHeld(window, GLFW.GLFW_KEY_D) || isHeld(window, KeyBinds.RHYTHM_RIGHT.getKey().getValue());
+		if (left) cursorX -= (float) cfg.getMarkerSpeed();
+		if (right) cursorX += (float) cfg.getMarkerSpeed();
+		cursorX = Math.max(barLeft, Math.min(barRight, cursorX));
+
+		boolean inside = Math.abs(cursorX - zoneMid) <= half;
+		if (inside) {
+			holdProgress++;
+			if (holdProgress >= cfg.getHoldDurationTicks()) levelCleared();
+		} else {
+			double loss = cfg.getBaseProgressLossPerTick() + (levelsCleared * cfg.getProgressLossPerLevel());
+			holdProgress = Math.max(0, holdProgress - loss);
+		}
+	}
+
+	private boolean isHeld(long window, int keyCode) {
+		return keyCode > 0 && GLFW.glfwGetKey(window, keyCode) == GLFW.GLFW_PRESS;
+	}
+
+	@Override
+	protected void onLevelCleared() {
+		zoneWidth = Math.max(cfg.getMinZoneWidth(), cfg.getBaseZoneWidth() - levelsCleared * cfg.getZoneWidthDecreasePerLevel());
+		holdProgress = 0;
+		levelTicksLeft = cfg.getLevelTimeLimitTicks();
+		zoneMid = this.width / 2.0f;
+		dirChangeTimer = DIR_CHANGE_INTERVAL_TICKS;
+	}
+
+	@Override
+	protected void renderGame(GuiGraphicsExtractor graphics) {
+		int cx = this.width / 2;
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.training.level", level()), cx, barY - 50, 0xFFFFD700);
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.training.time", Math.max(0, levelTicksLeft) / 20 + 1), cx, barY - 38, 0xFFFFFFFF);
+
+		graphics.fill(barLeft, barY - 8, barRight, barY + 8, 0xFF202020);
+		graphics.outline(barLeft - 1, barY - 9, (barRight - barLeft) + 2, 18, 0xFFFFFFFF);
+
+		float half = zoneWidth / 2.0f;
+		graphics.fill((int) (zoneMid - half), barY - 8, (int) (zoneMid + half), barY + 8, 0x9033FF55);
+
+		boolean inside = Math.abs(cursorX - zoneMid) <= half;
+		int markerColor = inside ? 0xFFFFFFFF : 0xFFFF5555;
+		graphics.fill((int) cursorX - 2, barY - 14, (int) cursorX + 2, barY + 14, markerColor);
+
+		int pbLeft = cx - 60, pbRight = cx + 60, pbY = barY + 30;
+		graphics.fill(pbLeft, pbY, pbRight, pbY + 6, 0xFF333333);
+		float pct = Math.min(1.0f, (float) holdProgress / cfg.getHoldDurationTicks());
+		graphics.fill(pbLeft, pbY, pbLeft + (int) ((pbRight - pbLeft) * pct), pbY + 6, 0xFF55FF55);
+	}
+}
+

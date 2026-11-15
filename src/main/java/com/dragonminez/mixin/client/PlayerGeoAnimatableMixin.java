@@ -1,0 +1,873 @@
+package com.dragonminez.mixin.client;
+
+import com.dragonminez.client.animation.AnimationCache;
+import com.dragonminez.client.animation.IPlayerAnimatable;
+import com.dragonminez.client.animation.CombatAnimationResolver;
+import com.dragonminez.client.events.FlySkillEvent;
+import com.dragonminez.common.combat.logic.player.PlayerAttackHelper;
+import com.dragonminez.common.combat.logic.player.PlayerAttackProperties;
+import com.dragonminez.common.combat.player.AttackHand;
+import com.dragonminez.common.stats.character.Cooldowns;
+import com.dragonminez.common.stats.character.Status;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsData;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.common.stats.extras.ActionMode;
+import com.dragonminez.common.util.TransformationsHelper;
+import com.dragonminez.client.render.firstperson.dto.FirstPersonManager;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.HumanoidArm;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.ShieldItem;
+import net.minecraft.world.item.ItemUseAnimation;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
+import com.geckolib.animatable.GeoAnimatable;
+import com.geckolib.animatable.instance.AnimatableInstanceCache;
+import com.geckolib.animatable.manager.AnimatableManager;
+import com.geckolib.animation.AnimationController;
+import com.geckolib.animation.state.AnimationTest;
+import com.geckolib.animation.RawAnimation;
+import com.geckolib.animation.object.PlayState;
+import com.geckolib.util.GeckoLibUtil;
+
+import static com.dragonminez.client.animation.BaseAnimations.*;
+
+@Mixin(AbstractClientPlayer.class)
+public abstract class PlayerGeoAnimatableMixin implements GeoAnimatable, IPlayerAnimatable {
+
+	private final AnimatableInstanceCache geoCache = GeckoLibUtil.createInstanceCache(this);
+
+	@Unique private double dragonminez$lastPosX = Double.NaN;
+	@Unique private double dragonminez$lastPosZ = Double.NaN;
+	@Unique private int dragonminez$stoppedTicks = 0;
+	@Unique private boolean dragonminez$isMovingState = false;
+	@Unique private int dragonminez$lastTickCount = -1;
+	@Unique private static final int STOPPED_THRESHOLD_TICKS = 3;
+	@Unique private double dragonminez$horizSpeed = 0.0;
+	@Unique private boolean dragonminez$wasAirborne = false;
+	@Unique private float dragonminez$maxFallDistance = 0.0F;
+	@Unique private boolean dragonminez$landingTriggered = false;
+	@Unique private int dragonminez$landingTicks = 0;
+	@Unique private boolean dragonminez$wasEating = false;
+	@Unique private static final double WALK_SPEED_BASELINE = 0.2158;
+	@Unique private static final double RUN_SPEED_BASELINE = 0.2806;
+	@Unique private static final int LANDING_ANIM_TICKS = 13;
+	@Unique private static final float FALL_TRIGGER_DISTANCE = 4.5F;
+	@Unique private static final double LANDING_LEAD_TICKS = 7.0;
+	@Unique private static final double LANDING_RAY_DISTANCE = 7.0;
+	@Unique private int dragonminez$lastDashTickRun = -1;
+	@Unique private int dragonminez$dashAnimTicks = 0;
+	@Unique private int dragonminez$lastAttackTickRun = -1;
+	@Unique private boolean dragonminez$isFlying = false;
+	@Unique private int dragonminez$dashDirection = 0;
+	@Unique private boolean dragonminez$isEvading = false;
+	@Unique private int dragonminez$evasionVariant = 0;
+	@Unique private int dragonminez$attackAnimTicks = 0;
+	@Unique private int dragonminez$combatGraceFrames = 0;
+	@Unique private boolean dragonminez$isOffhandAttack = false;
+	@Unique private int dragonminez$miningAnimTicks = 0;
+	@Unique private int dragonminez$lastMiningTickRun = -1;
+	@Unique private boolean dragonminez$isShootingKi = false;
+	@Unique private String dragonminez$currentMeleeAnim = null;
+	@Unique private String dragonminez$currentPoseAnim = null;
+	@Unique private boolean dragonminez$poseInstantResume = false;
+	@Unique private float dragonminez$currentMeleeSpeed = 1.0F;
+
+	@Unique private static final int POSE_TRANSITION_TICKS = 4;
+
+	@Unique private String dragonminez$currentKiAnim = null;
+	@Unique private String dragonminez$lastKiAnim = null;
+	@Unique private boolean dragonminez$kiAnimHold = true;
+	@Unique private int dragonminez$kiAnimTicks = 0;
+	@Unique private int dragonminez$lastKiTickRun = -1;
+	@Unique private String dragonminez$lastKiCtlAnim = null;
+	@Unique private static final int KI_FIRE_ONESHOT_TICKS = 14;
+
+	@Unique
+	private boolean dragonminez$isActuallyMoving(AbstractClientPlayer player) {
+		int currentTick = player.tickCount;
+
+		if (currentTick == dragonminez$lastTickCount) return dragonminez$isMovingState;
+		dragonminez$lastTickCount = currentTick;
+
+		if (Double.isNaN(dragonminez$lastPosX)) {
+			dragonminez$lastPosX = player.getX();
+			dragonminez$lastPosZ = player.getZ();
+			dragonminez$wasAirborne = !player.onGround();
+			return false;
+		}
+
+		double deltaX = player.getX() - dragonminez$lastPosX;
+		double deltaZ = player.getZ() - dragonminez$lastPosZ;
+		double distanceSq = deltaX * deltaX + deltaZ * deltaZ;
+
+		dragonminez$lastPosX = player.getX();
+		dragonminez$lastPosZ = player.getZ();
+		dragonminez$horizSpeed = Math.sqrt(distanceSq);
+
+		dragonminez$updateLanding(player);
+
+		boolean isCurrentlyMoving = distanceSq > 0.0001;
+
+		if (isCurrentlyMoving) {
+			dragonminez$isMovingState = true;
+			dragonminez$stoppedTicks = 0;
+		} else {
+			dragonminez$stoppedTicks++;
+			if (dragonminez$stoppedTicks >= STOPPED_THRESHOLD_TICKS) {
+				dragonminez$isMovingState = false;
+			}
+		}
+
+		return dragonminez$isMovingState;
+	}
+
+	@Unique
+	private void dragonminez$updateLanding(AbstractClientPlayer player) {
+		boolean onGround = player.onGround();
+
+		if (!onGround) {
+			dragonminez$maxFallDistance = Math.max(dragonminez$maxFallDistance, (float) player.fallDistance);
+			double descentSpeed = -player.getDeltaMovement().y;
+			if (!dragonminez$landingTriggered
+					&& dragonminez$maxFallDistance >= FALL_TRIGGER_DISTANCE
+					&& descentSpeed > 0.1
+					&& dragonminez$groundClearance(player) / descentSpeed <= LANDING_LEAD_TICKS) {
+				dragonminez$landingTicks = LANDING_ANIM_TICKS;
+				dragonminez$landingTriggered = true;
+			}
+		} else {
+			dragonminez$maxFallDistance = 0.0F;
+			dragonminez$landingTriggered = false;
+		}
+
+		dragonminez$wasAirborne = !onGround;
+		if (dragonminez$landingTicks > 0) dragonminez$landingTicks--;
+	}
+
+	@Unique
+	private double dragonminez$groundClearance(AbstractClientPlayer player) {
+		Vec3 start = new Vec3(player.getX(), player.getBoundingBox().minY, player.getZ());
+		Vec3 end = start.add(0.0, -LANDING_RAY_DISTANCE, 0.0);
+		HitResult hit = player.level().clip(new ClipContext(start, end, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, player));
+		if (hit.getType() == HitResult.Type.MISS) return Double.MAX_VALUE;
+		return start.y - hit.getLocation().y;
+	}
+
+	@Unique
+	private float dragonminez$movementSpeedFactor(double baseline) {
+		return (float) Mth.clamp(dragonminez$horizSpeed / baseline, 0.6, 1.8);
+	}
+
+	@Unique private static final double FUSION_PAIR_RANGE_SQ = 64.0;
+
+	@Unique
+	private AbstractClientPlayer dragonminez$findFusionPartner(AbstractClientPlayer player) {
+		AbstractClientPlayer partner = null;
+		double bestSq = Double.MAX_VALUE;
+		for (var other : player.level().players()) {
+			if (other == player || !(other instanceof AbstractClientPlayer candidate)) continue;
+			boolean otherFusing = StatsProvider.get(StatsCapability.INSTANCE, other)
+					.map(d -> d.getStatus().isActionCharging() && d.getStatus().getSelectedAction() == ActionMode.FUSION)
+					.orElse(false);
+			if (!otherFusing) continue;
+			double dSq = player.distanceToSqr(other);
+			if (dSq <= FUSION_PAIR_RANGE_SQ && dSq < bestSq) {
+				bestSq = dSq;
+				partner = candidate;
+			}
+		}
+		return partner;
+	}
+
+	@Unique
+	private AbstractClientPlayer dragonminez$findPotaraPartner(AbstractClientPlayer player, java.util.UUID partnerUUID) {
+		if (partnerUUID == null) return null;
+		return player.level().getPlayerByUUID(partnerUUID) instanceof AbstractClientPlayer candidate ? candidate : null;
+	}
+
+	@Unique
+	private RawAnimation dragonminez$resolveFlyAnimation(AbstractClientPlayer player) {
+		Minecraft mc = Minecraft.getInstance();
+
+		if (player == mc.player) {
+			boolean forward = mc.options.keyUp.isDown();
+			boolean back = mc.options.keyDown.isDown();
+			boolean left = mc.options.keyLeft.isDown();
+			boolean right = mc.options.keyRight.isDown();
+
+			if (forward) return FLY_FRONT;
+			if (back) return FLY_BACK;
+			if (left) return FLY_LEFT;
+			if (right) return FLY_RIGHT;
+			return FLY_IDLE;
+		}
+
+		double moveX = player.getX() - player.xOld;
+		double moveZ = player.getZ() - player.zOld;
+		double horizontal = Math.sqrt(moveX * moveX + moveZ * moveZ);
+		if (horizontal < 0.01) return FLY_IDLE;
+
+		float yawRad = player.yBodyRot * Mth.DEG_TO_RAD;
+		double sin = Mth.sin(yawRad);
+		double cos = Mth.cos(yawRad);
+		double forwardComp = -moveX * sin + moveZ * cos;
+		double rightComp = -moveX * cos - moveZ * sin;
+
+		if (Math.abs(forwardComp) >= Math.abs(rightComp)) {
+			return forwardComp >= 0 ? FLY_FRONT : FLY_BACK;
+		}
+		return rightComp >= 0 ? FLY_RIGHT : FLY_LEFT;
+	}
+
+	@Unique
+	private static boolean dragonminez$isEatingFood(AbstractClientPlayer player) {
+		if (!player.isUsingItem()) return false;
+		ItemUseAnimation anim = player.getUseItem().getUseAnimation();
+		return anim == ItemUseAnimation.EAT || anim == ItemUseAnimation.DRINK;
+	}
+
+	@Override
+	public void registerControllers(AnimatableManager.ControllerRegistrar registrar) {
+		registrar.add(new AnimationController<>("controller", 4, this::predicate));
+		registrar.add(new AnimationController<>("attack_controller", 0, this::attackPredicate));
+		registrar.add(new AnimationController<>("mining_controller", 0, this::miningPredicate));
+		registrar.add(new AnimationController<>("block_controller", 3, this::blockPredicate));
+		registrar.add(new AnimationController<>("shield_controller", 3, this::shieldPredicate));
+		registrar.add(new AnimationController<>("tailcontroller", 0, this::tailpredicate));
+		registrar.add(new AnimationController<>("dash_controller", 0, this::dashPredicate));
+		registrar.add(new AnimationController<>("pose_controller", POSE_TRANSITION_TICKS, this::posePredicate));
+		registrar.add(new AnimationController<>("ki_controller", 4, this::kiPredicate));
+		registrar.add(new AnimationController<>("eat_controller", 3, this::eatPredicate));
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState eatPredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+		AnimationController<T> ctl = state.controller();
+
+		if (dragonminez$isEatingFood(player)) {
+			if (!dragonminez$wasEating) {
+                ctl.reset();
+                ctl.setAnimation(EAT);
+				dragonminez$wasEating = true;
+			}
+			return PlayState.CONTINUE;
+		}
+
+		dragonminez$wasEating = false;
+		// GeckoLib 5 can leave the last loop frame applied when a controller returns STOP.
+		// Clear the eat pose as soon as the item use ends so locomotion/combat can take over.
+		if (ctl.getCurrentRawAnimation() != null) ctl.reset();
+		return PlayState.STOP;
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState predicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+
+		state.controller().setAnimationSpeed(1.0D);
+
+		if (dragonminez$currentKiAnim != null && dragonminez$kiAnimHold) {
+			if (!dragonminez$currentKiAnim.equals(dragonminez$lastKiAnim)) {
+                state.controller().reset();
+                state.controller().setAnimation(AnimationCache.getPlayAndHold(dragonminez$currentKiAnim));
+				dragonminez$lastKiAnim = dragonminez$currentKiAnim;
+			}
+			return PlayState.CONTINUE;
+		}
+		dragonminez$lastKiAnim = null;
+
+		IPlayerAnimatable animatable = (IPlayerAnimatable) this;
+		if (dragonminez$dashAnimTicks > 0) return PlayState.STOP;
+
+		boolean isMoving = dragonminez$isActuallyMoving(player);
+
+		StatsData data = StatsProvider.get(StatsCapability.INSTANCE, player).orElse(null);
+		if (data == null) return state.setAndContinue(IDLE);
+
+		if (data.getStatus().getPotaraPoseTimer() > 0) {
+			AbstractClientPlayer potaraPartner = dragonminez$findPotaraPartner(player, data.getStatus().getPotaraPartnerUUID());
+			if (potaraPartner != null) {
+				AbstractClientPlayer leader = player.getUUID().compareTo(potaraPartner.getUUID()) < 0 ? player : potaraPartner;
+				double refRad = Math.toRadians(leader.getYRot());
+				double rightX = -Math.cos(refRad);
+				double rightZ = -Math.sin(refRad);
+				double side = (player.getX() - potaraPartner.getX()) * rightX + (player.getZ() - potaraPartner.getZ()) * rightZ;
+				return state.setAndContinue(side > 0 ? FUSION_POTHALA_LEFT : FUSION_POTHALA_RIGHT);
+			}
+			return state.setAndContinue(FUSION_POTHALA_RIGHT);
+		}
+
+		boolean isDraining = data.getCooldowns().hasCooldown(Cooldowns.DRAIN_ACTIVE);
+		boolean flySkillActive = data.getSkills().isSkillActive("fly");
+		boolean isChargingKi = data.getStatus().isChargingKi();
+		boolean isBlocking = data.getStatus().isBlocking();
+		boolean isKnockedDown = data.getStatus().isKnockedDown();
+		boolean isOozaru = data.getCharacter().isOozaruCached();
+		var nextFormConfig = TransformationsHelper.getNextAvailableForm(data);
+		var nextStackFormConfig = TransformationsHelper.getNextAvailableStackForm(data);
+		String nextForm = nextFormConfig != null ? nextFormConfig.getName().toLowerCase() : "";
+		boolean isTransforming = data.getStatus().isActionCharging();
+		ActionMode actionMode = data.getStatus().getSelectedAction();
+
+		if (isKnockedDown) return state.setAndContinue(KNOCKBACK_HORIZONTAL);
+
+        if (data.getStatus().isInGodRitual()) {
+            if (data.getStatus().getGodRitualRole() != com.dragonminez.common.stats.character.Status.GOD_RITUAL_RECIPIENT)
+                return state.setAndContinue(IDLE);
+            return state.setAndContinue(data.getResources().getActionCharge() >= 100 ? FLY_IDLE : KI_CHARGE);
+        }
+        if (data.getStatus().isSharingKi()) return state.setAndContinue(IDLE);
+
+		if (isDraining) return state.setAndContinue(DRAIN);
+
+		if (player.isPassenger()) return state.setAndContinue(SIT);
+
+		if (isChargingKi && !isMoving && !isBlocking)
+			return state.setAndContinue(data.getStatus().isKiBurstArmed() || data.getStatus().isSurgeActive() ? KI_OVERCHARGE : KI_CHARGE);
+
+		if (isTransforming && actionMode.equals(ActionMode.FORM)) {
+			if (nextFormConfig != null && nextFormConfig.hasTransformationAnimation()) {
+				return state.setAndContinue(AnimationCache.getPlay(nextFormConfig.getTransformationAnimation()));
+			}
+			if (nextForm.contains("ozaru")) return state.setAndContinue(OOZARU_TRANSFORMATION);
+			return state.setAndContinue(TRANSFORMATION);
+		} else if (isTransforming && actionMode.equals(ActionMode.STACK)) {
+			if (nextStackFormConfig != null && nextStackFormConfig.hasTransformationAnimation()) {
+				return state.setAndContinue(AnimationCache.getPlay(nextStackFormConfig.getTransformationAnimation()));
+			}
+			return state.setAndContinue(TRANSFORMATION);
+		} else if (isTransforming && actionMode.equals(ActionMode.RACIAL)) {
+			return state.setAndContinue(ABSORB);
+		} else if (isTransforming && actionMode.equals(ActionMode.FUSION)) {
+			AbstractClientPlayer fusionPartner = dragonminez$findFusionPartner(player);
+			if (fusionPartner != null) {
+				AbstractClientPlayer leader = player.getUUID().compareTo(fusionPartner.getUUID()) < 0 ? player : fusionPartner;
+				double refRad = Math.toRadians(leader.getYRot());
+				double rightX = -Math.cos(refRad);
+				double rightZ = -Math.sin(refRad);
+				double side = (player.getX() - fusionPartner.getX()) * rightX + (player.getZ() - fusionPartner.getZ()) * rightZ;
+				state.controller().setAnimationSpeed(0.583D);
+				return state.setAndContinue(side > 0 ? FUSION_DANCE_LEFT : FUSION_DANCE_RIGHT);
+			}
+			return state.setAndContinue(TRANSFORMATION);
+		} else if (isTransforming) {
+			return state.setAndContinue(TRANSFORMATION);
+		}
+
+
+		if (player.isSwimming()) return state.setAndContinue(SWIMMING);
+
+		if (player.isVisuallyCrawling()) {
+			if (isMoving) return state.setAndContinue(CRAWLING_MOVE);
+			return state.setAndContinue(CRAWLING);
+		}
+
+		if (flySkillActive && data.getStatus().getFlightMode() == Status.FLIGHT_COMBAT) {
+			// Combat flight stays upright; exploration flight uses the dedicated flight animations below.
+			if (isMoving && player.isSprinting()) {
+				state.controller().setAnimationSpeed(dragonminez$movementSpeedFactor(RUN_SPEED_BASELINE));
+				return state.setAndContinue(RUN);
+			}
+			if (isMoving) {
+				state.controller().setAnimationSpeed(dragonminez$movementSpeedFactor(WALK_SPEED_BASELINE));
+				return state.setAndContinue(WALK);
+			}
+			return state.setAndContinue(IDLE);
+		}
+
+		if (flySkillActive || player.isFallFlying() || animatable.dragonminez$isFlying() || player.getAbilities().flying) {
+			if (FlySkillEvent.getInstance().isFlyingFast(player)) return state.setAndContinue(FLY_FAST);
+			return state.setAndContinue(dragonminez$resolveFlyAnimation(player));
+		}
+
+		if (player.onClimbable() && !player.onGround()) return state.setAndContinue(CLIMB);
+
+		if (dragonminez$landingTicks > 0 && !player.isCrouching()) return state.setAndContinue(LANDING);
+
+		if (player.onGround()) {
+			if (player.isCrouching()) {
+				if (isMoving) return state.setAndContinue(CROUCHING_WALK);
+				return state.setAndContinue(CROUCHING);
+			} else if (isMoving && player.isSprinting()) {
+				state.controller().setAnimationSpeed(dragonminez$movementSpeedFactor(RUN_SPEED_BASELINE));
+				return state.setAndContinue(RUN);
+			} else if (isMoving) {
+				state.controller().setAnimationSpeed(dragonminez$movementSpeedFactor(WALK_SPEED_BASELINE));
+				if (isOozaru) return state.setAndContinue(WALK_OOZARU);
+				return state.setAndContinue(WALK);
+			} else {
+				if (isOozaru) return state.setAndContinue(IDLE_OOZARU);
+				return state.setAndContinue(IDLE);
+			}
+		}
+
+		if (player.getDeltaMovement().y < -0.08) return state.setAndContinue(FLY_IDLE);
+
+		return state.setAndContinue(JUMP);
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState kiPredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+		AnimationController<T> ctl = state.controller();
+
+		if (dragonminez$currentKiAnim == null || dragonminez$kiAnimHold) {
+			dragonminez$lastKiCtlAnim = null;
+			// STOP retains a PLAY_AND_HOLD timeline in GeckoLib 5. A released bind or
+			// technique must stop owning the bones before locomotion/attacks can resume.
+			if (ctl.getCurrentRawAnimation() != null) ctl.reset();
+			return PlayState.STOP;
+		}
+
+		boolean isFire = dragonminez$currentKiAnim.endsWith("_fire");
+
+		if (!isFire) {
+			if (!dragonminez$currentKiAnim.equals(dragonminez$lastKiCtlAnim)) {
+                ctl.reset();
+                ctl.setAnimation(AnimationCache.getPlayAndHold(dragonminez$currentKiAnim));
+				dragonminez$lastKiCtlAnim = dragonminez$currentKiAnim;
+			}
+			return PlayState.CONTINUE;
+		}
+
+		if (!dragonminez$currentKiAnim.equals(dragonminez$lastKiCtlAnim)) {
+            ctl.reset();
+            ctl.setAnimation(AnimationCache.getPlay(dragonminez$currentKiAnim));
+			dragonminez$lastKiCtlAnim = dragonminez$currentKiAnim;
+			dragonminez$kiAnimTicks = KI_FIRE_ONESHOT_TICKS;
+		}
+		if (player.tickCount != dragonminez$lastKiTickRun) {
+			dragonminez$lastKiTickRun = player.tickCount;
+			if (dragonminez$kiAnimTicks > 0) dragonminez$kiAnimTicks--;
+		}
+		if (dragonminez$kiAnimTicks > 0) return PlayState.CONTINUE;
+
+		dragonminez$currentKiAnim = null;
+		dragonminez$lastKiCtlAnim = null;
+		ctl.reset();
+		return PlayState.STOP;
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState posePredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+		AnimationController<T> ctl = state.controller();
+		dragonminez$currentPoseAnim = CombatAnimationResolver.resolvePlayerPose(player);
+		StatsData data = StatsProvider.get(StatsCapability.INSTANCE, player).orElse(null);
+
+		boolean interrupted = dragonminez$attackAnimTicks > 0 || dragonminez$dashAnimTicks > 0
+				|| dragonminez$isShootingKi || dragonminez$currentKiAnim != null
+				|| player.isSwimming() || player.isVisuallyCrawling() || player.isPassenger()
+				|| player.isSleeping()
+				|| (data != null && (data.getStatus().isBlocking() || data.getStatus().isChargingKi() || data.getStatus().isKiShareLocked()));
+		if (interrupted || dragonminez$currentPoseAnim == null || dragonminez$currentPoseAnim.isEmpty()) {
+			// STOP leaves GeckoLib 5's old pose timeline attached, which can keep overriding
+			// attacks or bare hands. Remove it whenever this overlay gives up the bones.
+			if (ctl.getCurrentRawAnimation() != null) ctl.reset();
+			if (interrupted) dragonminez$poseInstantResume = true;
+			return PlayState.STOP;
+		}
+
+		ctl.setTransitionTicks(dragonminez$poseInstantResume ? 0 : POSE_TRANSITION_TICKS);
+		dragonminez$poseInstantResume = false;
+
+		return state.setAndContinue(AnimationCache.getLoop(dragonminez$currentPoseAnim));
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState tailpredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+
+		StatsData data = StatsProvider.get(StatsCapability.INSTANCE, player).orElse(null);
+		if (data == null) return PlayState.STOP;
+
+		String race = data.getCharacter().getRaceName().toLowerCase();
+		if (race.equals("bioandroid") && data.getCooldowns().hasCooldown(Cooldowns.DRAIN_ACTIVE)) return PlayState.STOP;
+
+		state.controller().setAnimation(TAIL);
+		return PlayState.CONTINUE;
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState attackPredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+		if (player.isSleeping()) {
+			dragonminez$attackAnimTicks = 0;
+			dragonminez$currentMeleeAnim = null;
+			state.controller().reset();
+			return PlayState.STOP;
+		}
+		if (player.tickCount != dragonminez$lastAttackTickRun) {
+			dragonminez$lastAttackTickRun = player.tickCount;
+			if (dragonminez$attackAnimTicks > 0) dragonminez$attackAnimTicks--;
+		}
+
+		AnimationController<T> ctl = state.controller();
+		boolean hasSwingFrame = player.attackAnim > 0.0F || player.swinging || player.swingTime > 0;
+		if (dragonminez$currentMeleeAnim != null) {
+
+			ctl.setAnimationSpeed(dragonminez$currentMeleeSpeed);
+            // GeckoLib 5 reset() clears the selected animation, so restart before selecting it.
+            ctl.reset();
+
+			if (!dragonminez$currentMeleeAnim.equals("fallback")) {
+				ctl.setAnimation(AnimationCache.getPlay(dragonminez$currentMeleeAnim));
+			} else ctl.setAnimation(ATTACK);
+
+			dragonminez$currentMeleeAnim = null;
+			dragonminez$attackAnimTicks = Math.max(8, Math.round(12.0F / Math.max(dragonminez$currentMeleeSpeed, 0.1F)));
+			return PlayState.CONTINUE;
+		}
+
+		if (dragonminez$attackAnimTicks <= 0 && hasSwingFrame && (shouldPlayUnarmedAttack(player) || shouldPlayGenericAttack(player))) {
+			ctl.setAnimationSpeed(1.0D);
+			ctl.reset();
+            ctl.setAnimation(MINING1);
+			dragonminez$attackAnimTicks = 8;
+			return PlayState.CONTINUE;
+		}
+
+		if (dragonminez$attackAnimTicks > 0) return PlayState.CONTINUE;
+
+		ctl.setAnimationSpeed(1.0D);
+		if (ctl.getCurrentRawAnimation() != null) ctl.reset();
+		return PlayState.STOP;
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState miningPredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+		AnimationController<T> ctl = state.controller();
+		if (player.isSleeping() || dragonminez$isEatingFood(player)) {
+			dragonminez$miningAnimTicks = 0;
+			return PlayState.STOP;
+		}
+		boolean hasMiningSwing = player.attackAnim > 0.0F || player.swinging || player.swingTime > 0;
+
+		if (player.tickCount != dragonminez$lastMiningTickRun) {
+			dragonminez$lastMiningTickRun = player.tickCount;
+			if (dragonminez$miningAnimTicks > 0) dragonminez$miningAnimTicks--;
+		}
+
+		if (isPlacingBlock(player) && !isBlocking(player)) {
+			if (ctl.hasAnimationFinished()) {
+				RawAnimation placeAnim = isMainHandBlock(player) ? ATTACK : ATTACK2;
+				ctl.reset();
+                ctl.setAnimation(placeAnim);
+			}
+			dragonminez$miningAnimTicks = 8;
+			return PlayState.CONTINUE;
+		}
+
+		if (hasMiningSwing && isUsingTool(player) && !isPlacingBlock(player) && !isBlocking(player)) {
+			if (ctl.hasAnimationFinished()) {
+                ctl.reset();
+				if (isMainHandTool(player)) {
+					ctl.setAnimation(MINING1);
+				} else if (isOffHandTool(player)) {
+					ctl.setAnimation(MINING2);
+				}
+			}
+			dragonminez$miningAnimTicks = 10;
+			return PlayState.CONTINUE;
+		}
+
+		if (dragonminez$miningAnimTicks > 0) {
+			return PlayState.CONTINUE;
+		}
+
+		return PlayState.STOP;
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState blockPredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+		AnimationController<T> ctl = state.controller();
+
+		StatsData data = StatsProvider.get(StatsCapability.INSTANCE, player).orElse(null);
+		if (data != null && data.getStatus().isBlocking()) {
+			if (ctl.hasAnimationFinished() || !BLOCK.equals(ctl.getCurrentRawAnimation())) {
+				ctl.reset();
+                ctl.setAnimation(BLOCK);
+			}
+			return PlayState.CONTINUE;
+		}
+		// STOP alone can keep the last blocking keyframe in GeckoLib's timeline.
+		// Remove that timeline so the locomotion/held-item pose owns the arms again.
+		if (ctl.getCurrentRawAnimation() != null) {
+			ctl.reset();
+			dragonminez$poseInstantResume = true;
+		}
+		return PlayState.STOP;
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState shieldPredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+
+		AnimationController<T> ctl = state.controller();
+
+		ItemStack mainHand = player.getMainHandItem();
+		ItemStack offHand = player.getOffhandItem();
+
+		boolean mainHandIsShield = mainHand.getItem() instanceof ShieldItem;
+		boolean offHandIsShield = offHand.getItem() instanceof ShieldItem;
+
+		if (player.isUsingItem()) {
+			if (mainHandIsShield || offHandIsShield) {
+				RawAnimation targetAnimation;
+				boolean isRightHanded = player.getMainArm() == HumanoidArm.RIGHT;
+
+				if (mainHandIsShield) targetAnimation = isRightHanded ? SHIELD_RIGHT : SHIELD_LEFT;
+				else targetAnimation = isRightHanded ? SHIELD_LEFT : SHIELD_RIGHT;
+
+				if (ctl.hasAnimationFinished() || !targetAnimation.equals(ctl.getCurrentRawAnimation())) {
+					ctl.reset();
+                    ctl.setAnimation(targetAnimation);
+				}
+				return PlayState.CONTINUE;
+			}
+		}
+
+		if (ctl.getCurrentRawAnimation() != null) {
+			ctl.reset();
+			dragonminez$poseInstantResume = true;
+		}
+		return PlayState.STOP;
+	}
+
+	@Unique
+	private <T extends GeoAnimatable> PlayState dashPredicate(AnimationTest<T> state) {
+		AbstractClientPlayer player = (AbstractClientPlayer) (Object) this;
+		AnimationController<T> ctl = state.controller();
+
+		if (player.tickCount != dragonminez$lastDashTickRun) {
+			dragonminez$lastDashTickRun = player.tickCount;
+			if (dragonminez$dashAnimTicks > 0) dragonminez$dashAnimTicks--;
+		}
+
+		if (dragonminez$dashAnimTicks > 0) return PlayState.CONTINUE;
+
+		if (dragonminez$isEvading) {
+			RawAnimation evasionAnim = switch (dragonminez$evasionVariant) {
+				case 1 -> EVASION_FRONT;
+				case 2 -> EVASION_BACK;
+				case 3 -> EVASION_LEFT;
+				default -> EVASION_RIGHT;
+			};
+			ctl.reset();
+            ctl.setAnimation(evasionAnim);
+			dragonminez$dashAnimTicks = 12;
+			dragonminez$isEvading = false;
+			return PlayState.CONTINUE;
+		}
+
+		if (dragonminez$dashDirection != 0) {
+			RawAnimation dashAnim = switch (dragonminez$dashDirection) {
+				case 2 -> DASH_BACKWARD;
+				case 3 -> DASH_RIGHT;
+				case 4 -> DASH_LEFT;
+				case 6 -> DOUBLEDASH_BACKWARD;
+				case 7 -> DOUBLEDASH_RIGHT;
+				case 8 -> DOUBLEDASH_LEFT;
+				default -> DASH_FORWARD;
+			};
+			ctl.reset();
+            ctl.setAnimation(dashAnim);
+			dragonminez$dashAnimTicks = 12;
+			dragonminez$dashDirection = 0;
+			return PlayState.CONTINUE;
+		}
+
+		return PlayState.STOP;
+	}
+
+	@Unique
+	private static boolean isUsingTool(AbstractClientPlayer player) {
+		Item mainHand = player.getMainHandItem().getItem();
+		Item offHand = player.getOffhandItem().getItem();
+
+		return mainHand.getDescriptionId().contains("pickaxe") || mainHand.getDescriptionId().contains("axe") || mainHand.getDescriptionId().contains("shovel") || mainHand.getDescriptionId().contains("hoe")
+				|| offHand.getDescriptionId().contains("pickaxe") || offHand.getDescriptionId().contains("axe") || offHand.getDescriptionId().contains("shovel") || offHand.getDescriptionId().contains("hoe");
+	}
+
+	@Unique
+	private static boolean isMainHandTool(AbstractClientPlayer player) {
+		Item mainHand = player.getMainHandItem().getItem();
+		return mainHand.getDescriptionId().contains("pickaxe") || mainHand.getDescriptionId().contains("axe") || mainHand.getDescriptionId().contains("shovel") || mainHand.getDescriptionId().contains("hoe");
+	}
+
+	@Unique
+	private static boolean isOffHandTool(AbstractClientPlayer player) {
+		Item offHand = player.getOffhandItem().getItem();
+		return offHand.getDescriptionId().contains("pickaxe") || offHand.getDescriptionId().contains("axe") || offHand.getDescriptionId().contains("shovel") || offHand.getDescriptionId().contains("hoe");
+	}
+
+	@Unique
+	private static boolean isMainHandBlock(AbstractClientPlayer player) {
+		return player.getMainHandItem().getItem() instanceof BlockItem;
+	}
+
+	@Unique
+	private static boolean isPlacingBlock(AbstractClientPlayer player) {
+		ItemStack mainHand = player.getMainHandItem();
+		ItemStack offHand = player.getOffhandItem();
+
+		boolean hasBlockInMainHand = mainHand.getItem() instanceof BlockItem;
+		boolean hasBlockInOffHand = offHand.getItem() instanceof BlockItem;
+		boolean hasPlaceActionFrame = (player.isUsingItem() && !dragonminez$isEatingFood(player)) || player.swinging || player.swingTime > 0;
+
+		return (hasBlockInMainHand || hasBlockInOffHand) && hasPlaceActionFrame;
+	}
+
+	@Unique
+	private static boolean isBlocking(AbstractClientPlayer player) {
+		StatsData data = StatsProvider.get(StatsCapability.INSTANCE, player).orElse(null);
+		return data != null && data.getStatus().isBlocking();
+	}
+
+	@Unique
+	private static boolean shouldPlayUnarmedAttack(AbstractClientPlayer player) {
+		return player.getMainHandItem().isEmpty()
+				&& player.getOffhandItem().isEmpty()
+				&& !player.isUsingItem()
+				&& !isBlocking(player)
+				&& !isPlacingBlock(player)
+				&& !isUsingTool(player);
+	}
+
+	@Unique
+	private static boolean shouldPlayGenericAttack(AbstractClientPlayer player) {
+		if (player.isUsingItem()) return false;
+		if (isBlocking(player) || isPlacingBlock(player) || isUsingTool(player)) return false;
+		if (player instanceof PlayerAttackProperties props) {
+			AttackHand hand = PlayerAttackHelper.getCurrentAttack(player, props.getComboCount());
+			if (hand != null) return false;
+		}
+		return true;
+	}
+
+	@Override
+	public void dragonminez$setFlying(boolean flying) {
+		this.dragonminez$isFlying = flying;
+	}
+
+	@Override
+	public boolean dragonminez$isFlying() {
+		return dragonminez$isFlying;
+	}
+
+	@Override
+	public void dragonminez$triggerDash(int direction) {
+		this.dragonminez$dashDirection = direction;
+	}
+
+	@Override
+	public void dragonminez$triggerEvasion() {
+		this.dragonminez$isEvading = true;
+		this.dragonminez$evasionVariant = (int) (Math.random() * 4) + 1;
+	}
+
+	@Override
+	public void dragonminez$setShootingKi(boolean shootingKi) {
+		this.dragonminez$isShootingKi = shootingKi;
+	}
+
+	@Override
+	public boolean dragonminez$isShootingKi() {
+		return dragonminez$isShootingKi;
+	}
+
+	@Override
+	public void dragonminez$playMeleeAnimation(String animationName, boolean isOffhand, float speedMultiplier) {
+		AbstractClientPlayer self = (AbstractClientPlayer) (Object) this;
+		boolean isLocal = self == Minecraft.getInstance().player;
+		boolean vanillaFirstPerson = Minecraft.getInstance().options.getCameraType().isFirstPerson() && !FirstPersonManager.shouldRenderFirstPerson(self);
+		if (isLocal && vanillaFirstPerson) {
+			// DMZ intercepts startAttack(), so vanilla never reaches its normal swing call.
+			self.swing(isOffhand ? net.minecraft.world.InteractionHand.OFF_HAND : net.minecraft.world.InteractionHand.MAIN_HAND);
+		}
+
+		ItemStack attackingStack = isOffhand ? self.getOffhandItem() : self.getMainHandItem();
+		boolean armSpecific = !attackingStack.isEmpty() && !PlayerAttackHelper.isTwoHandedWielding(self);
+		boolean useLeftArm = armSpecific && (isOffhand != (self.getMainArm() == HumanoidArm.LEFT));
+		String resolved = CombatAnimationResolver.resolveAttack(animationName, useLeftArm);
+		this.dragonminez$currentMeleeAnim = resolved.isEmpty() ? "fallback" : resolved;
+		this.dragonminez$currentMeleeSpeed = Math.max(0.15F, speedMultiplier);
+		this.dragonminez$isOffhandAttack = isOffhand;
+	}
+
+	@Override
+	public boolean dragonminez$isPlayingCombatAnimation() {
+		if (dragonminez$attackAnimTicks > 0) {
+			dragonminez$combatGraceFrames = 8;
+			return true;
+		}
+		if (dragonminez$combatGraceFrames > 0) {
+			dragonminez$combatGraceFrames--;
+			return true;
+		}
+		return dragonminez$currentPoseAnim != null && !dragonminez$currentPoseAnim.isEmpty();
+	}
+
+	@Override
+	public boolean dragonminez$isAttackingWithOffhand() {
+		return this.dragonminez$isOffhandAttack;
+	}
+
+	@Override
+	public float dragonminez$getCombatPlacementWeight() {
+		// Snap the held item between combat placement and its rest grip: full weight while the
+		// attack animation plays, none the moment it ends (no eased "swing back" of the item).
+		return dragonminez$attackAnimTicks > 0 ? 1.0F : 0.0F;
+	}
+
+	@Override
+	public void dragonminez$playKiAnimation(String animationName, boolean hold) {
+		this.dragonminez$currentKiAnim = animationName;
+		this.dragonminez$kiAnimHold = hold;
+		this.dragonminez$kiAnimTicks = 0;
+	}
+
+	@Override
+	public void dragonminez$stopKiAnimation() {
+		this.dragonminez$currentKiAnim = null;
+		this.dragonminez$lastKiAnim = null;
+		this.dragonminez$lastKiCtlAnim = null;
+		this.dragonminez$kiAnimHold = true;
+		this.dragonminez$kiAnimTicks = 0;
+	}
+
+    @Override
+    public boolean dragonminez$isPlayingKiAnimation() {
+        return this.dragonminez$currentKiAnim != null;
+    }
+
+	@Override
+	public AnimatableInstanceCache getAnimatableInstanceCache() {
+		return this.geoCache;
+	}
+
+	@Override
+	public String dragonminez$getCurrentPlayingAnimation() {
+		long instanceId = ((AbstractClientPlayer) (Object) this).getId();
+		var manager = this.geoCache.getManagerForId(instanceId);
+		if (manager != null) {
+			AnimationController<?> controller = manager.getAnimationControllers().get("controller");
+			if (controller != null && controller.getCurrentRawAnimation() != null) {
+				return controller.getCurrentRawAnimation().getAnimationStages().isEmpty() ? "" : controller.getCurrentRawAnimation().getAnimationStages().get(0).animationName();
+			}
+		}
+		return "";
+	}
+}

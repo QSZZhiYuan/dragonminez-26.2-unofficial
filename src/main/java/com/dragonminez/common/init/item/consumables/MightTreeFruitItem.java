@@ -1,0 +1,74 @@
+package com.dragonminez.common.init.item.consumables;
+
+import net.minecraft.world.item.component.TooltipDisplay;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.food.FoodProperties;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.level.Level;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.jetbrains.annotations.NotNull;
+
+import java.util.List;
+
+public class MightTreeFruitItem extends Item {
+    private static final int HUNGER = 2;
+    private static final float SATURATION = 20;
+    private static final int EFFECT_DURATION_TICKS = 20 * 60;
+
+    public MightTreeFruitItem() {
+		this(new net.minecraft.world.item.Item.Properties().stacksTo(6).food(
+                new FoodProperties.Builder()
+                        .nutrition(HUNGER)
+                        .saturationModifier(SATURATION)
+                        .alwaysEdible()
+                        .build()
+        ));
+	}
+
+	/** 26.2: the registry id must be on the properties before super() runs. */
+	public MightTreeFruitItem(net.minecraft.world.item.Item.Properties properties) {
+		super(properties);
+	}
+
+    @Override
+    public @NotNull Component getName(@NotNull ItemStack pStack) {
+        return Component.translatable("item.dragonminez.might_tree_fruit");
+    }
+
+    @Override
+    public void appendHoverText(ItemStack pStack, Item.TooltipContext context, TooltipDisplay display, java.util.function.Consumer<Component> pTooltipComponents, TooltipFlag pIsAdvanced) {
+        pTooltipComponents.accept(Component.translatable("item.dragonminez.might_tree_fruit.tooltip").withStyle(ChatFormatting.GRAY));
+    }
+
+    @Override
+    public ItemStack finishUsingItem(ItemStack pStack, Level pLevel, LivingEntity pLivingEntity) {
+        if (!pLevel.isClientSide() && pLivingEntity instanceof ServerPlayer player) {
+            StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+                double effectPower = ConfigManager.getServerConfig().getGameplay().getMightFruitPower();
+                data.getEffects().addEffect("mightfruit", effectPower, EFFECT_DURATION_TICKS);
+            });
+
+            player.getFoodData().eat(HUNGER, SATURATION);
+            player.sendSystemMessage(Component.translatable("item.dragonminez.might_tree_fruit.use"));
+
+            if (player.isCreative()) {
+                pStack.shrink(0);
+            } else {
+                pStack.shrink(1);
+            }
+        }
+
+        return pStack;
+    }
+}
+
+

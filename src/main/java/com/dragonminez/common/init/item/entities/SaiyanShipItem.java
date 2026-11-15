@@ -1,0 +1,83 @@
+package com.dragonminez.common.init.item.entities;
+
+import net.minecraft.world.item.component.TooltipDisplay;
+import com.dragonminez.common.init.MainEntities;
+import com.dragonminez.common.init.entities.SpacePodEntity;
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.item.context.UseOnContext;
+import net.minecraft.world.level.Level;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.util.List;
+
+public class SaiyanShipItem extends Item {
+	public SaiyanShipItem( ) {
+		this(new net.minecraft.world.item.Item.Properties().stacksTo(1));
+	}
+
+	/** 26.2: the registry id must be on the properties before super() runs. */
+	public SaiyanShipItem(net.minecraft.world.item.Item.Properties properties) {
+		super(properties);
+	}
+
+	@Override
+	public InteractionResult useOn(UseOnContext pContext) {
+		Player player = pContext.getPlayer();
+		Level level = pContext.getLevel();
+		BlockPos pos = pContext.getClickedPos();
+		Direction direction = pContext.getClickedFace();
+
+		BlockPos spawnPos = pos.above();
+
+		if (player != null && level != null) {
+			SpacePodEntity nave = new SpacePodEntity(MainEntities.SPACE_POD.get(), level);
+			nave.setPos(spawnPos.getX(), spawnPos.getY(), spawnPos.getZ());
+
+			level.addFreshEntity(nave);
+
+			pContext.getItemInHand().shrink(1);
+
+			return level.isClientSide() ? InteractionResult.SUCCESS : InteractionResult.SUCCESS_SERVER;
+		}
+
+
+		return super.useOn(pContext);
+	}
+
+//    @Override
+//    public InteractionResult use(Level pLevel, Player pPlayer, InteractionHand pHand) {
+//        ItemStack itemstack = pPlayer.getItemInHand(pHand);
+//
+//        if (!pLevel.isClientSide()) {
+//
+//            KiBarrierEntity disc = new KiBarrierEntity(pLevel, pPlayer);
+//
+//            disc.setColors(0x36C26E, 0x36C26E);
+//
+//            pLevel.addFreshEntity(disc);
+//        }
+//
+//        pLevel.playSound(null, pPlayer.getX(), pPlayer.getY(), pPlayer.getZ(),
+//                SoundEvents.BEACON_ACTIVATE, SoundSource.PLAYERS, 1.0F, 0.5F);
+//
+//        pPlayer.getCooldowns().addCooldown(this, 20);
+//
+//        return (pLevel.isClientSide  ? InteractionResult.SUCCESS : InteractionResult.SUCCESS_SERVER);
+//    }
+
+	@Override
+	public void appendHoverText(ItemStack pStack, Item.TooltipContext context, TooltipDisplay display, java.util.function.Consumer<Component> pTooltipComponents, TooltipFlag pIsAdvanced) {
+		pTooltipComponents.accept(Component.translatable("item.dragonminez.saiyan_ship.tooltip").withStyle(ChatFormatting.GRAY));
+	}
+}
+
+

@@ -1,0 +1,205 @@
+package com.dragonminez.client.gui.config;
+
+import com.dragonminez.client.gui.UnblurredScreen;
+import com.dragonminez.client.util.ScrollbarState;
+import com.dragonminez.common.config.ConfigManager;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.Component;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.api.distmarker.OnlyIn;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+
+
+@OnlyIn(Dist.CLIENT)
+public class DMZModConfigScreen extends UnblurredScreen {
+
+	private static final int ROW_HEIGHT = 12;
+	private static final int LIST_TOP = 40;
+	private static final int LIST_BOTTOM_MARGIN = 40;
+
+	private final Screen parent;
+	private final List<String> allFiles = new ArrayList<>();
+	private final List<String> files = new ArrayList<>();
+	private EditBox searchBox;
+	private int scrollOffset = 0;
+	private final ScrollbarState scrollBar = new ScrollbarState();
+
+	public DMZModConfigScreen(Screen parent) {
+		super(Component.translatable("gui.dragonminez.modconfig.title"));
+		this.parent = parent;
+	}
+
+	private int listBottom() {
+		return this.height - LIST_BOTTOM_MARGIN;
+	}
+
+	private int visibleRows() {
+		return Math.max(1, (listBottom() - LIST_TOP) / ROW_HEIGHT);
+	}
+
+	private int maxScroll() {
+		return Math.max(0, files.size() - visibleRows());
+	}
+
+	@Override
+	protected void init() {
+		super.init();
+		allFiles.clear();
+		allFiles.addAll(ConfigManager.getAvailableConfigFiles());
+		allFiles.sort(String::compareToIgnoreCase);
+
+		searchBox = new EditBox(this.font, this.width / 2 - 100, 20, 200, 14,
+				Component.translatable("gui.dragonminez.modconfig.search"));
+		searchBox.setHint(Component.translatable("gui.dragonminez.modconfig.search"));
+		searchBox.setResponder(v -> {
+			applyFilter(v);
+			scrollOffset = 0;
+		});
+		addWidget(searchBox);
+
+		applyFilter("");
+
+		int bottomY = this.height - 28;
+		if (this.minecraft != null && this.minecraft.player != null) {
+			addRenderableWidget(Button.builder(Component.translatable("gui.dragonminez.modconfig.reload"),
+							b -> runReload())
+					.bounds(this.width / 2 - 154, bottomY, 150, 20).build());
+			addRenderableWidget(Button.builder(Component.translatable("gui.dragonminez.modconfig.done"),
+							b -> onClose())
+					.bounds(this.width / 2 + 4, bottomY, 150, 20).build());
+		} else {
+			addRenderableWidget(Button.builder(Component.translatable("gui.dragonminez.modconfig.done"),
+							b -> onClose())
+					.bounds(this.width / 2 - 75, bottomY, 150, 20).build());
+		}
+	}
+
+	private void applyFilter(String query) {
+		files.clear();
+		String q = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+		for (String f : allFiles) {
+			if (q.isEmpty() || f.toLowerCase(Locale.ROOT).contains(q)) files.add(f);
+		}
+	}
+
+	private void runReload() {
+		if (this.minecraft != null && this.minecraft.player != null) {
+			this.minecraft.player.connection.sendCommand("dmzreload");
+			onClose();
+		}
+	}
+
+
+	// 26.2: vanilla already calls extractBackground once per frame from the final
+	// extractRenderStateWithTooltipAndSubtitles; calling it again here caused
+	//   IllegalStateException: Can only blur once per frame
+	@Override
+	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+
+		graphics.centeredText(this.font, this.title, this.width / 2, 8, 0xFFFFFFFF);
+		searchBox.extractRenderState(graphics, mouseX, mouseY, partialTick);
+
+		int top = LIST_TOP;
+		int bottom = listBottom();
+		graphics.enableScissor(0, top, this.width, bottom);
+		int start = scrollOffset;
+		int end = Math.min(files.size(), start + visibleRows());
+		for (int i = start; i < end; i++) {
+			int y = top + (i - start) * ROW_HEIGHT;
+			boolean hovered = mouseX >= this.width / 2 - 150 && mouseX <= this.width / 2 + 150
+					&& mouseY >= y && mouseY < y + ROW_HEIGHT;
+			int color = hovered ? 0xFFFFD700 : 0xFFCCCCCC;
+			graphics.text(this.font, files.get(i), this.width / 2 - 150, y + 2, color);
+		}
+		graphics.disableScissor();
+
+		if (files.isEmpty()) {
+			graphics.centeredText(this.font, Component.translatable("gui.dragonminez.modconfig.empty"),
+					this.width / 2, top + 10, 0xFF888888);
+		}
+
+		scrollBar.update(this.width / 2 + 156, 3, top, bottom - top, maxScroll());
+		if (maxScroll() > 0) {
+			int barX = this.width / 2 + 156;
+			int trackH = bottom - top;
+			graphics.fill(barX, top, barX + 3, bottom, 0xFF333333);
+			float pct = (float) scrollOffset / maxScroll();
+			int handleH = Math.max(20, (int) (trackH * ((float) visibleRows() / files.size())));
+			int handleY = top + (int) ((trackH - handleH) * pct);
+			graphics.fill(barX, handleY, barX + 3, handleY + handleH, 0xFFAAAAAA);
+		}
+
+		super.extractRenderState(graphics, mouseX, mouseY, partialTick);
+	}
+
+	@Override
+	public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		if (button == 0 && scrollBar.tryStartDrag(mouseX, mouseY)) {
+			scrollOffset = Math.round(scrollBar.scrollFor(mouseY));
+			return true;
+		}
+		if (button == 0) {
+			int top = LIST_TOP;
+			int bottom = listBottom();
+			if (mouseX >= this.width / 2.0 - 150 && mouseX <= this.width / 2.0 + 150
+					&& mouseY >= top && mouseY < bottom) {
+				int index = scrollOffset + (int) ((mouseY - top) / ROW_HEIGHT);
+				if (index >= 0 && index < files.size() && this.minecraft != null) {
+					this.minecraft.gui.setScreen(new DMZConfigEditScreen(this, files.get(index)));
+					return true;
+				}
+			}
+		}
+		return super.mouseClicked(event, doubleClick);
+	}
+
+	@Override
+	public boolean mouseDragged(net.minecraft.client.input.MouseButtonEvent event, double dragX, double dragY) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		if (scrollBar.isDragging()) {
+			scrollOffset = Math.round(scrollBar.scrollFor(mouseY));
+			return true;
+		}
+		return super.mouseDragged(event, dragX, dragY);
+	}
+
+	@Override
+	public boolean mouseReleased(net.minecraft.client.input.MouseButtonEvent event) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		if (scrollBar.isDragging()) {
+			scrollBar.stopDrag();
+			return true;
+		}
+		return super.mouseReleased(event);
+	}
+
+	@Override
+	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+		int max = maxScroll();
+		if (max > 0) {
+			scrollOffset = Math.max(0, Math.min(max, scrollOffset - (int) Math.signum(scrollY)));
+			return true;
+		}
+		return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+	}
+
+	@Override
+	public void onClose() {
+		if (this.minecraft != null) this.minecraft.gui.setScreen(parent);
+	}
+}
+

@@ -1,0 +1,104 @@
+package com.dragonminez.client.gui.hud;
+
+import com.dragonminez.Reference;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.common.stats.techniques.KiAttackData;
+import com.dragonminez.common.stats.techniques.TechniqueData;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.Style;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.Mth;
+import net.neoforged.neoforge.client.gui.GuiLayer;
+
+public class TechniqueChargeOverlay {
+	private static final Identifier CHARGE_HUD_TEXTURE = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/hud/kicharge_hud.png");
+	private static final Identifier DMZ_FONT = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "smooth");
+	private static volatile float currentChargePercent = 0.0f;
+
+	public static final GuiLayer HUD_TECHNIQUE_CHARGE = (guiGraphics, deltaTracker) -> {
+		float partialTicks = deltaTracker.getGameTimeDeltaPartialTick(false);
+		int width = guiGraphics.guiWidth();
+		int height = guiGraphics.guiHeight();
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.getDebugOverlay().showDebugScreen() || mc.player == null) return;
+
+		StatsProvider.get(StatsCapability.INSTANCE, mc.player).ifPresent(data -> {
+			if (!data.getStatus().isHasCreatedCharacter()) return;
+
+			float targetChargePercent = data.getTechniques().getTechniqueChargePercent();
+			if (targetChargePercent <= 0.0f && !data.getTechniques().isTechniqueCharging()) {
+				currentChargePercent = 0.0f;
+				return;
+			}
+
+			TechniqueData selectedTechnique = data.getTechniques().getSelectedTechnique();
+			if (!(selectedTechnique instanceof KiAttackData kiAttack)) return;
+			if (kiAttack.isInstantCast()) return;
+
+			float scale = 1.125f;
+			int barW = Math.round(148 * scale);
+			int x = (width - barW) / 2;
+			int y = height - 72;
+			float lerped = currentChargePercent + (targetChargePercent - currentChargePercent) * 0.20f;
+			if (Math.abs(lerped - targetChargePercent) <= 0.3f) lerped = targetChargePercent;
+
+			currentChargePercent = Math.max(0.0f, Math.min(200.0f, lerped));
+
+			float normalFillRatio = Mth.clamp(currentChargePercent / 100.0f, 0.0f, 1.0f);
+			int normalPixels = Math.round(148 * normalFillRatio);
+
+			float overMax = Math.max(1.0f, KiAttackData.OVERCHARGE_MAX_PERCENT - 100.0f);
+			float overchargeRatio = Mth.clamp((currentChargePercent - 100.0f) / overMax, 0.0f, 1.0f);
+			int overchargePixels = Math.round(148 * overchargeRatio);
+
+
+
+			guiGraphics.pose().pushMatrix();
+			guiGraphics.pose().translate(x, y);
+			guiGraphics.pose().scale(scale, scale);
+			guiGraphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, CHARGE_HUD_TEXTURE, 0, 0, 0, 0, 145, 14, 256, 256);
+
+			int kiColor = kiAttack.getColorExterior();
+			float r = ((kiColor >> 16) & 0xFF) / 255.0f;
+			float g = ((kiColor >> 8) & 0xFF) / 255.0f;
+			float b = (kiColor & 0xFF) / 255.0f;
+
+			if (normalPixels > 0) {
+				guiGraphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, CHARGE_HUD_TEXTURE,
+					0, 0, 0, 14, normalPixels, 14, normalPixels, 14, 256, 256,
+					net.minecraft.util.ARGB.colorFromFloat(1.0f, r, g, b));
+			}
+
+			if (overchargePixels > 0) {
+				guiGraphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, CHARGE_HUD_TEXTURE,
+					0, 0, 0, 14, overchargePixels, 14, overchargePixels, 14, 256, 256,
+					net.minecraft.util.ARGB.colorFromFloat(1.0f, r * 0.5f, g * 0.5f, b * 0.5f));
+			}
+
+			guiGraphics.pose().popMatrix();
+
+			drawChargeStatus(guiGraphics, mc.font, currentChargePercent, width, y);
+		});
+	};
+
+	private static void drawChargeStatus(net.minecraft.client.gui.GuiGraphicsExtractor guiGraphics, Font font, float percent, int width, int barY) {
+		boolean charging = percent < 100.0f - 0.01f;
+		MutableComponent hint = charging ? tr("technique.charge.charging") : tr("technique.charge.overcharging");
+		int color = charging ? 0xFFFFFFFF : 0xFFFFD200;
+
+		MutableComponent pct = Component.literal(Math.round(percent) + "%").withStyle(Style.EMPTY.withFont(new net.minecraft.network.chat.FontDescription.Resource(DMZ_FONT)));
+		int pctY = barY - 4 - font.lineHeight;
+		int hintY = pctY - 2 - font.lineHeight;
+		guiGraphics.text(font, hint, (width - font.width(hint)) / 2, hintY, color, true);
+		guiGraphics.text(font, pct, (width - font.width(pct)) / 2, pctY, color, true);
+	}
+
+	private static MutableComponent tr(String key) {
+        return Component.translatable(key);
+	}
+}

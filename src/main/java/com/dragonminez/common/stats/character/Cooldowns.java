@@ -1,0 +1,119 @@
+package com.dragonminez.common.stats.character;
+
+import net.minecraft.nbt.CompoundTag;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class Cooldowns {
+	public static final String BABA_KNOCKOUT = "BabaKnockout";
+	public static final String BABA_AGGRO_GRACE = "BabaAggroGrace";
+	public static final String KI_VOLLEY_CD = "KiVolleyCooldown";
+	public static final String KNOCKDOWN_INVULN = "KnockdownInvulnerability";
+	public static final String ASSIMILATION = "Assimilation";
+	public static final String ABSORPTION = "Absorption";
+	public static final String ZENKAI_KNOCKOUT = "ZenkaiKnockout";
+	public static final String ZENKAI_TEMP_BUFF = "ZenkaiTempBuff";
+	public static final String ADRENALINE = "Adrenaline";
+	public static final String ADRENALINE_ACTIVE = "AdrenalineActive";
+	public static final String ANDROID_BARRIER_CD = "AndroidBarrierCooldown";
+	public static final String NAMEK_REGEN = "NamekRegen";
+	public static final String NAMEK_REGEN_ACTIVE = "NamekRegenActive";
+	public static final String BIO_EXPLODE_CD = "BioExplodeCooldown";
+	public static final String BIO_EXPLODE_RECOVERY = "BioExplodeRecovery";
+	public static final String STRIKE_GLOBAL = "StrikeGlobalCooldown";
+	public static final String KAMI_BLESS = "KamiBlessCooldown";
+	public static final String OLDKAI_ZSWORD = "OldKaiZSword";
+	public static final String KARIN_NIMBUS = "KarinNimbus";
+	public static final String PERFECT_EVASION_CD = "PerfectEvasionCooldown";
+	public static final String GOD_RITUAL = "GodRitualCooldown";
+	public static final String KI_SURGE_CD = "KiSurgeCooldown";
+    private final Map<String, Integer> cooldowns;
+
+    public static final String SENZU_KARIN = "SenzuKarin";
+    public static final String REVIVE_BABA = "Revive";
+    public static final String ZENKAI = "Zenkai";
+	public static final String DRAIN = "Drain";
+	public static final String COMBAT = "CombatTimer";
+	public static final String POISE_CD = "PoiseCooldown";
+	public static final String FUSION_CD = "FusionCooldown";
+	public static final String DRAIN_ACTIVE = "DrainActive";
+	public static final String DASH_CD = "DashCooldown";
+	public static final String DOUBLEDASH_CD = "DoubleDashCooldown";
+	public static final String TELEPORT_CD = "TeleportCooldown";
+	public static final String DASH_ACTIVE = "DashActive";
+	public static final String KI_BLAST_CD = "KiBlastCooldown";
+	public static final String MAJIN_REVIVE_ACTIVE = "MajinReviveActive";
+	public static final String MAJIN_REVIVE_CD = "MajinReviveCooldown";
+	public static final String KNOCKDOWN_DURATION = "KnockdownDuration";
+	public static final String STAMINA_PAUSE = "StaminaPause";
+	public static final String COMBAT_FLY_LOCK = "CombatFlyLock";
+	public static final String COMBATFLY_IMPULSE_CD = "CombatFlyImpulseCd";
+
+    public Cooldowns() {
+        this.cooldowns = new HashMap<>();
+    }
+
+    public int getCooldown(String key) {
+        return cooldowns.getOrDefault(key, 0);
+    }
+
+    public void setCooldown(String key, int value) {
+        if (value <= 0) {
+            cooldowns.remove(key);
+        } else {
+            cooldowns.put(key, value);
+        }
+    }
+
+    public void addCooldown(String key, int amount) {
+        int current = getCooldown(key);
+        setCooldown(key, current + amount);
+    }
+
+    public void reduceCooldown(String key, int amount) {
+        int current = getCooldown(key);
+        setCooldown(key, Math.max(0, current - amount));
+    }
+
+    public boolean hasCooldown(String key) {
+        return getCooldown(key) > 0;
+    }
+
+	public void removeCooldown(String key) {
+		cooldowns.remove(key);
+	}
+
+	public void clearCooldowns() {
+		cooldowns.clear();
+	}
+
+    public void tick() {
+        cooldowns.replaceAll((key, value) -> Math.max(0, value - 1));
+        cooldowns.entrySet().removeIf(entry -> entry.getValue() <= 0);
+    }
+
+    public CompoundTag save() {
+        CompoundTag tag = new CompoundTag();
+        cooldowns.forEach(tag::putInt);
+        return tag;
+    }
+
+    public void load(CompoundTag tag) {
+        cooldowns.clear();
+        for (String key : tag.keySet()) {
+            cooldowns.put(key, tag.getIntOr(key, 0));
+        }
+    }
+
+    public void copyFrom(Cooldowns other) {
+        this.cooldowns.clear();
+        this.cooldowns.putAll(other.cooldowns);
+    }
+
+    public Map<String, Integer> getAllCooldowns() {
+        return new HashMap<>(cooldowns);
+    }
+}
+
+

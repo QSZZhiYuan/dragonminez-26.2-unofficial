@@ -1,0 +1,325 @@
+package com.dragonminez.server.events.players;
+
+import com.dragonminez.Reference;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.events.DMZEvent;
+import com.dragonminez.common.init.entities.ShadowDummyEntity;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.network.C2S.SummonPlayerShadowDummyC2S;
+import com.dragonminez.common.network.S2C.ResourceSyncS2C;
+import com.dragonminez.common.init.entities.ki.AbstractKiProjectile;
+import com.dragonminez.common.quest.PartyManager;
+import com.dragonminez.server.dynamicgrowth.DynamicGrowthService;
+import com.dragonminez.common.config.TpSource;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsData;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.common.stats.extras.DynamicGrowthStat;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.animal.Animal;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.equipment.ArmorType;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.event.tick.PlayerTickEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.event.tick.LevelTickEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
+import net.neoforged.bus.api.EventPriority;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.UUID;
+
+@EventBusSubscriber(modid = Reference.MOD_ID)
+public class TPGainEvents {
+
+	private static final Map<UUID, Vec3> lastPositions = new HashMap<>();
+	private static final Map<UUID, Double> accumulatedDistance = new HashMap<>();
+
+	private static final ThreadLocal<Boolean> IS_SHARING_TP = ThreadLocal.withInitial(() -> false);
+
+	@SubscribeEvent(priority = EventPriority.HIGH)
+	public static void onTPGain(DMZEvent.TPGainEvent event) {
+		if (!(event.getPlayer() instanceof ServerPlayer player)) return;
+		int baseTP = event.getTpGain();
+		if (baseTP <= 0) return;
+
+		if (IS_SHARING_TP.get()) return;
+
+		StatsData data = StatsProvider.get(StatsCapability.INSTANCE, player).orElse(null);
+		if (data == null) return;
+		
+		int finalTP = data.calculateTPGain(baseTP, TpSource.STORY);
+
+		if (event.getShareWithParty()) {
+			IS_SHARING_TP.set(true);
+			try {
+				if (data.getStatus().isFused() && data.getStatus().isFusionLeader()) shareWithFusionPartner(player, data, finalTP);
+				shareWithParty(player, data, finalTP);
+			} finally {
+				IS_SHARING_TP.set(false);
+			}
+		}
+
+		event.setTpGain(finalTP);
+	}
+
+	@SubscribeEvent
+	public static void onPlayerTick(PlayerTickEvent.Post event) {
+		if (event.getEntity() instanceof ServerPlayer player) {
+			StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+				if (!data.getStatus().isHasCreatedCharacter()) return;
+
+				int passiveTp = ConfigManager.getServerConfig().getGameplay().getPassiveTpGain();
+				if (passiveTp > 0 && player.tickCount % 100 == 0) {
+					int boosted = data.applyTpBoosts(TpSource.PASSIVE, passiveTp);
+					data.getResources().addTrainingPoints(boosted);
+				}
+
+				int tpTravel = ConfigManager.getServerConfig().getGameplay().getTpPer20BlocksTraveled();
+				if (tpTravel > 0) {
+					UUID uuid = player.getUUID();
+					Vec3 currentPos = player.position();
+					Vec3 lastPos = lastPositions.getOrDefault(uuid, currentPos);
+					double dist = currentPos.distanceTo(lastPos);
+
+					if (dist > 0 && dist < 10.0) {
+						double accum = accumulatedDistance.getOrDefault(uuid, 0.0) + dist;
+						if (accum >= 20.0) {
+							int times = (int) (accum / 20.0);
+							data.getResources().addTrainingPoints(data.applyTpBoosts(TpSource.TRAVEL, tpTravel * times));
+							accum %= 20.0;
+						}
+						accumulatedDistance.put(uuid, accum);
+					}
+					lastPositions.put(uuid, currentPos);
+				}
+			});
+		}
+	}
+
+	@SubscribeEvent
+	public static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+		lastPositions.remove(event.getEntity().getUUID());
+		accumulatedDistance.remove(event.getEntity().getUUID());
+	}
+
+	@SubscribeEvent(priority = EventPriority.LOW)
+	public static void onBlockBreak(BreakBlockEvent event) {
+		if (event.getPlayer() instanceof ServerPlayer player && !event.isCanceled()) {
+			StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+				if (data.getStatus().isHasCreatedCharacter()) {
+					int baseTp = ConfigManager.getServerConfig().getGameplay().getTpPerBlockMined();
+					if (baseTp > 0) {
+						// 1.21 BreakEvent no longer exposes exp-to-drop; keep base TP only.
+						data.getResources().addTrainingPoints(data.applyTpBoosts(TpSource.MINED, baseTp));
+					}
+				}
+			});
+		}
+	}
+
+	@SubscribeEvent
+	public static void onItemCrafted(PlayerEvent.ItemCraftedEvent event) {
+		if (event.getEntity() instanceof ServerPlayer player) {
+			StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+				if (data.getStatus().isHasCreatedCharacter()) {
+					int baseTp = ConfigManager.getServerConfig().getGameplay().getTpPerItemCrafted();
+					if (baseTp > 0) {
+						ItemStack stack = event.getCrafting();
+						int amount = stack.getCount();
+
+						int rarityMult = stack.getRarity().ordinal() + 1;
+						int tierMult = 1;
+
+						net.minecraft.world.item.component.Tool tool = stack.get(net.minecraft.core.component.DataComponents.TOOL);
+						if (tool != null) tierMult = Math.max(1, (int) (tool.defaultMiningSpeed() / 2));
+						else if (stack.has(net.minecraft.core.component.DataComponents.EQUIPPABLE)) tierMult = Math.max(1, 2);
+
+						int finalMult = Math.max(rarityMult, tierMult);
+						data.getResources().addTrainingPoints(data.applyTpBoosts(TpSource.CRAFTED, baseTp * amount * finalMult));
+					}
+				}
+			});
+		}
+	}
+
+	private static boolean isPlayerOwnedShadow(Entity entity) {
+		return entity instanceof ShadowDummyEntity
+				&& entity.getPersistentData().getBooleanOr(SummonPlayerShadowDummyC2S.TAG_PLAYER_SHADOW, false);
+	}
+
+	private static int applyPlayerShadowTpBonus(Entity entity, int tp) {
+		if (tp <= 0 || !isPlayerOwnedShadow(entity)) return tp;
+		int pct = Mth.clamp(entity.getPersistentData().getIntOr("dmz_shadow_percent", 0), 25, 75);
+		return Math.max(1, (int) Math.round(tp * (1.0 + pct / 100.0)));
+	}
+
+	private static boolean dropTps(Entity entity) {
+		List<Class<?>> enemyList = List.of(
+				Monster.class,
+				Animal.class,
+				Player.class,
+Mob.class
+		);
+		return enemyList.stream().anyMatch(clase -> clase.isInstance(entity));
+	}
+
+	@SubscribeEvent
+	public static void onEntityDeath(LivingDeathEvent event) {
+		if (event.getEntity().level().isClientSide()) return;
+		if (!(event.getSource().getEntity() instanceof Player attacker)) return;
+
+		StatsProvider.get(StatsCapability.INSTANCE, attacker).ifPresent(data -> {
+			if (dropTps(event.getEntity())) {
+				double ratio = ConfigManager.getServerConfig().getGameplay().getTpHealthRatio();
+				double healthMult = (event.getEntity() instanceof ShadowDummyEntity && !isPlayerOwnedShadow(event.getEntity())) ? 0.5 : 1.0;
+				int tpsHealth = (int) Math.round(event.getEntity().getMaxHealth() * ratio * healthMult);
+				int killTp = applyDynamicGrowthCombatTpMult(ConfigManager.getServerConfig().getGameplay().getTpPerHit() + tpsHealth);
+				int boostedTp = data.applyTpBoosts(TpSource.KILL, killTp);
+				int finalTp = applyPlayerShadowTpBonus(event.getEntity(), boostedTp);
+				data.getResources().addTrainingPoints(finalTp);
+			}
+		});
+	}
+
+	@SubscribeEvent(priority = EventPriority.LOW)
+	public static void onEntityHit(LivingDamageEvent.Pre event) {
+		if (event.getEntity().level().isClientSide()) return;
+
+		if (event.getSource().getEntity() instanceof Player attacker) {
+			StatsProvider.get(StatsCapability.INSTANCE, attacker).ifPresent(attackerData -> {
+				if (attackerData.getStatus().isHasCreatedCharacter()) {
+					if (event.getNewDamage() >= 1) {
+						int baseTps = applyDynamicGrowthCombatTpMult(ConfigManager.getServerConfig().getGameplay().getTpPerHit());
+						int boostedTps = attackerData.applyTpBoosts(TpSource.HIT, baseTps);
+						int finalTps = applyPlayerShadowTpBonus(event.getEntity(), boostedTps);
+						attackerData.getResources().addTrainingPoints(finalTps);
+					}
+				}
+			});
+		}
+	}
+
+	@SubscribeEvent(priority = EventPriority.LOWEST)
+	public static void onLivingHurtDynamicGrowth(LivingDamageEvent.Pre event) {
+		if (event.getEntity().level().isClientSide()) return;
+		if (!ConfigManager.getServerConfig().getDynamicGrowth().isEnabled()) return;
+
+		LivingEntity target = event.getEntity();
+		DamageSource source = event.getSource();
+		Entity sourceEntity = source.getEntity();
+		Entity directEntity = source.getDirectEntity();
+		float damage = event.getNewDamage();
+		if (damage <= 0.0F) return;
+
+		if (isPlayerOwnedShadow(target) || isPlayerOwnedShadow(sourceEntity)) return;
+
+		if (sourceEntity instanceof ServerPlayer attacker && !attacker.is(target)) {
+			StatsProvider.get(StatsCapability.INSTANCE, attacker).ifPresent(attackerData -> {
+				DynamicGrowthService.markCombat(attackerData);
+				if (isKiDamage(source, directEntity)) {
+					double damageXp = DynamicGrowthService.practiceDamageXp(attacker, target, damage);
+					DynamicGrowthService.award(attacker, attackerData, DynamicGrowthStat.PWR, damageXp, target);
+				} else if (isPlayerMeleeDamage(source, attacker)) {
+					var pdata = attacker.getPersistentData();
+					double growthDamage = pdata.getDoubleOr("dmz_growth_melee_damage", 0.0);
+					boolean kiWeaponInUse = pdata.getBooleanOr("dmz_growth_ki_weapon", false);
+					boolean kiInfuseActive = pdata.getBooleanOr("dmz_growth_ki_infuse", false);
+					pdata.remove("dmz_growth_melee_damage");
+					pdata.remove("dmz_growth_ki_weapon");
+					pdata.remove("dmz_growth_ki_infuse");
+
+					double growthXp = DynamicGrowthService.practiceDamageXp(attacker, target, (float) growthDamage);
+					if (kiWeaponInUse) {
+						DynamicGrowthService.award(attacker, attackerData, DynamicGrowthStat.PWR, growthXp, target);
+					} else if (kiInfuseActive) {
+						DynamicGrowthService.award(attacker, attackerData, DynamicGrowthStat.STR, growthXp, target);
+						double pwrShare = ConfigManager.getServerConfig().getDynamicGrowth().getKiWeaponMeleePwrShare();
+						DynamicGrowthService.award(attacker, attackerData, DynamicGrowthStat.PWR, growthXp * pwrShare, target);
+					} else {
+						DynamicGrowthService.award(attacker, attackerData, DynamicGrowthStat.STR, growthXp, target);
+					}
+				}
+			});
+		}
+
+		if (target instanceof ServerPlayer victim && sourceEntity instanceof LivingEntity attacker && !sourceEntity.is(victim)) {
+			StatsProvider.get(StatsCapability.INSTANCE, victim).ifPresent(victimData -> {
+				DynamicGrowthService.markCombat(victimData);
+				double vitalityXp = DynamicGrowthService.practiceDamageXp(victim, attacker, damage);
+				DynamicGrowthService.award(victim, victimData, DynamicGrowthStat.VIT, vitalityXp, attacker);
+			});
+		}
+	}
+
+	private static boolean isPlayerMeleeDamage(DamageSource source, ServerPlayer attacker) {
+		return "player".equals(source.getMsgId()) && (source.getDirectEntity() == null || source.getDirectEntity().is(attacker));
+	}
+
+	private static boolean isKiDamage(DamageSource source, Entity directEntity) {
+		if (directEntity instanceof AbstractKiProjectile) return true;
+		return source.getMsgId().toLowerCase(Locale.ROOT).contains("kiblast");
+	}
+
+	private static int applyDynamicGrowthCombatTpMult(int tp) {
+		if (tp <= 0) return tp;
+		var dynamicGrowth = ConfigManager.getServerConfig().getDynamicGrowth();
+		if (!dynamicGrowth.isEnabled()) return tp;
+		double mult = dynamicGrowth.getNaturalCombatTpMultiplier();
+		if (mult == 1.0) return tp;
+		return mult <= 0.0 ? 0 : Math.max(1, (int) Math.round(tp * mult));
+	}
+
+	private static void shareWithFusionPartner(ServerPlayer leader, StatsData leaderData, int totalTP) {
+		UUID partnerUUID = leaderData.getStatus().getFusionPartnerUUID();
+		if (partnerUUID == null) return;
+
+		ServerPlayer partner = leader.level().getServer().getPlayerList().getPlayer(partnerUUID);
+		if (partner == null) return;
+
+		StatsProvider.get(StatsCapability.INSTANCE, partner).ifPresent(pData -> {
+			pData.getResources().addTrainingPoints(totalTP / 2);
+			NetworkHandler.sendToTrackingEntityAndSelf(new ResourceSyncS2C(partner), partner);
+		});
+	}
+
+	private static void shareWithParty(ServerPlayer earner, StatsData data, int tp) {
+		if (!data.getPlayerQuestData().isInParty()) return;
+
+		double shareRatio = ConfigManager.getServerConfig().getGameplay().getPartyTpShareRatio();
+		if (shareRatio <= 0) return;
+
+		int sharedTP = (int) (tp * shareRatio);
+		if (sharedTP <= 0) return;
+
+		for (ServerPlayer member : PartyManager.getAllPartyMembers(earner)) {
+			if (member.getUUID().equals(earner.getUUID())) continue;
+
+			StatsProvider.get(StatsCapability.INSTANCE, member).ifPresent(pData -> {
+				if (pData.getStatus().isAlive()) {
+					pData.getResources().addTrainingPoints(sharedTP);
+					NetworkHandler.sendToTrackingEntityAndSelf(new ResourceSyncS2C(member), member);
+				}
+			});
+		}
+	}
+}
+

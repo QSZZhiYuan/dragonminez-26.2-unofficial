@@ -1,0 +1,341 @@
+package com.dragonminez.client.events;
+
+import com.dragonminez.Reference;
+import com.dragonminez.client.crowdin.CrowdinManager;
+import com.dragonminez.client.gui.UtilityMenuScreen;
+import com.dragonminez.client.gui.SpacePodScreen;
+import com.dragonminez.client.gui.character.util.BaseMenuScreen;
+import com.dragonminez.client.gui.character.CharacterCustomizationScreen;
+import com.dragonminez.client.gui.character.QuestTreeScreen;
+import com.dragonminez.client.gui.character.RaceSelectionScreen;
+import com.dragonminez.client.render.DMZRendererCache;
+import com.dragonminez.client.render.shader.TransformationPostShaderManager;
+import com.dragonminez.client.render.shader.UtilityMenuBlur;
+import com.dragonminez.client.util.TextureCounter;
+import com.dragonminez.client.util.KeyBinds;
+import com.dragonminez.client.gui.character.CharacterStatsScreen;
+import com.dragonminez.common.combat.logic.player.PlayerAttackHelper;
+import com.dragonminez.common.combat.util.Minecraft_DMZ;
+import com.dragonminez.common.compat.CameraAimHelper;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.init.MainSounds;
+import com.dragonminez.common.init.entities.SpacePodEntity;
+import com.dragonminez.common.network.C2S.SokidanControlC2S;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.mixin.client.MinecraftAccessor;
+import com.dragonminez.mixin.common.LivingEntityAccessor;
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.util.Mth;
+import com.mojang.blaze3d.platform.InputConstants;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.gui.screens.PauseScreen;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.neoforge.client.event.InputEvent;
+import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.event.tick.PlayerTickEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.event.tick.LevelTickEvent;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
+import org.lwjgl.glfw.GLFW;
+
+@EventBusSubscriber(modid = Reference.MOD_ID, value = Dist.CLIENT)
+public class ForgeClientEvents {
+	public static boolean isHasCreatedCharacterCache = false;
+	private static String lastLang = "";
+	private static boolean pendingCharacterCreationReopen = false;
+	private static int characterCreationOpenCooldownTicks = 0;
+	private static final int CHARACTER_CREATION_OPEN_COOLDOWN = 8;
+
+	/**
+	 * Above this, vanilla's health bar is not merely ugly but unrenderable.
+	 *
+	 * <p>{@code Gui#renderHearts} draws one sprite per half heart with no upper bound, so the
+	 * cost scales linearly with max health. DMZ stats reach 999,999,999, which asks vanilla for
+	 * hundreds of millions of blits in a single frame — a frame that never completes.
+	 */
+	private static final float VANILLA_SAFE_MAX_HEALTH = 200.0F;
+
+	/**
+	 * Hides the vanilla health bar, which DMZ replaces with its own.
+	 *
+	 * <p>The character-created cache alone is not a safe gate. It is populated from the DMZ stats
+	 * sync packet, but the player's max-health <i>attribute</i> arrives earlier, with the entity
+	 * itself. In that window vanilla renders DMZ-scale health as literal hearts and pegs the
+	 * render thread — and because the client is then too slow to process incoming packets, the
+	 * very sync that would set the cache never lands. The freeze starves the thing that would end
+	 * it, so on a heavy pack the window never closes and the client is dropped for a keepalive
+	 * timeout roughly 30 seconds later.
+	 *
+	 * <p>The health check below cannot starve, because it reads only an attribute already present
+	 * on the local player. Keep both conditions: the cache is the intended behaviour, this is the
+	 * floor that stops a sync delay from becoming an unrecoverable hang.
+	 */
+	@SubscribeEvent
+	public static void RenderHealthBar(RenderGuiLayerEvent.Pre event) {
+		LocalPlayer player = Minecraft.getInstance().player;
+		if (player == null) return;
+		if (!VanillaGuiLayers.PLAYER_HEALTH.equals(event.getName())) return;
+
+		if (isHasCreatedCharacterCache
+				|| player.getMaxHealth() + player.getAbsorptionAmount() > VANILLA_SAFE_MAX_HEALTH) {
+			event.setCanceled(true);
+		}
+	}
+
+	@SubscribeEvent
+	public static void onPlayerClone(ClientPlayerNetworkEvent.Clone event) {
+		// Fired when the local player entity is rebuilt: respawn after death and dimension change.
+		// Lets the quest tree's "Start" button be clickable again without waiting out the cooldown.
+		QuestTreeScreen.clearResummonCooldowns();
+		CameraAimHelper.clearLocalSokidans();
+	}
+
+	@SubscribeEvent
+	public static void onPlayerLogin(ClientPlayerNetworkEvent.LoggingIn event) {
+        com.dragonminez.client.render.effects.AuraModeState.pushLocalPreference();
+		TextureCounter.clearCache();
+		CameraAimHelper.clearLocalSokidans();
+		if (Minecraft.getInstance().player == null) return;
+		StatsProvider.get(StatsCapability.INSTANCE, Minecraft.getInstance().player).ifPresent(data -> {
+			isHasCreatedCharacterCache = data.getStatus().isHasCreatedCharacter();
+		});
+	}
+
+	@SubscribeEvent
+	public static void onKeyInput(InputEvent.Key event) {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.player == null) return;
+
+		if (KeyBinds.STATS_MENU.consumeClick()) {
+			if (mc.gui.screen() instanceof BaseMenuScreen) return;
+			if (mc.gui.screen() != null) return;
+			if (!BaseMenuScreen.isStatsMenuReopenBlocked()) {
+				StatsProvider.get(StatsCapability.INSTANCE, mc.player).ifPresent(data -> {
+					if (data.getStatus().isHasCreatedCharacter()) {
+						mc.gui.setScreen(new CharacterStatsScreen());
+					} else {
+						mc.gui.setScreen(new RaceSelectionScreen(data.getCharacter()));
+					}
+					mc.player.playSound(MainSounds.UI_MENU_SWITCH.get());
+				});
+			}
+			return;
+		}
+
+		if (mc.gui.screen() != null) return;
+
+		for (BaseMenuScreen.MenuTab tab : BaseMenuScreen.SECONDARY_TABS) {
+			if (tab.key().consumeClick()) {
+				openMenuTab(mc, tab.factory().get());
+				return;
+			}
+		}
+
+		if (KeyBinds.SPACEPOD_MENU.consumeClick() && mc.player.isPassenger() && mc.player.getVehicle() instanceof SpacePodEntity) {
+			mc.gui.setScreen(new SpacePodScreen());
+			mc.player.playSound(MainSounds.UI_MENU_SWITCH.get());
+		}
+
+        while (KeyBinds.SECOND_FUNCTION_KEY.consumeClick()) {
+			Vec3 aim = cameraAim(mc);
+			CameraAimHelper.store(mc.player, aim);
+			NetworkHandler.sendToServer(SokidanControlC2S.toggle(aim));
+        }
+	}
+
+	private static void openMenuTab(Minecraft mc, Screen screen) {
+		if (BaseMenuScreen.isStatsMenuReopenBlocked()) return;
+		StatsProvider.get(StatsCapability.INSTANCE, mc.player).ifPresent(data -> {
+			if (data.getStatus().isHasCreatedCharacter()) {
+				mc.gui.setScreen(screen);
+			} else {
+				mc.gui.setScreen(new RaceSelectionScreen(data.getCharacter()));
+			}
+			mc.player.playSound(MainSounds.UI_MENU_SWITCH.get());
+		});
+	}
+
+	private static int tickCounter = 0;
+	private static final int UPDATE_INTERVAL = 10;
+
+	public static void requestCharacterCreationReopen() {
+		if (!ConfigManager.getServerConfig().getGameplay().getForceCharacterCreation()) return;
+		pendingCharacterCreationReopen = true;
+	}
+
+	public static void markCharacterCreatedLocally() {
+		isHasCreatedCharacterCache = true;
+		pendingCharacterCreationReopen = false;
+		characterCreationOpenCooldownTicks = CHARACTER_CREATION_OPEN_COOLDOWN;
+	}
+
+	private static boolean isCharacterCreationScreen(Screen screen) {
+		return screen instanceof RaceSelectionScreen || screen instanceof CharacterCustomizationScreen;
+	}
+
+	private static boolean openCharacterCreationScreen(Minecraft mc) {
+		if (mc.player == null) return false;
+		if (!ConfigManager.getServerConfig().getGameplay().getForceCharacterCreation()) return false;
+		if (isHasCreatedCharacterCache) return false;
+		if (characterCreationOpenCooldownTicks > 0) return false;
+		final boolean[] opened = {false};
+		StatsProvider.get(StatsCapability.INSTANCE, mc.player).ifPresent(data -> {
+			com.dragonminez.LogUtil.info(com.dragonminez.Env.CLIENT,
+					"[DMZ-DIAG-GATE] dataLoaded={} created={} screen={} cooldown={} cacheFlag={}",
+					data.isDataLoaded(), data.getStatus().isHasCreatedCharacter(),
+					mc.gui.screen() == null ? "null" : mc.gui.screen().getClass().getSimpleName(),
+					characterCreationOpenCooldownTicks, isHasCreatedCharacterCache);
+			if (!data.isDataLoaded()) return;
+			if (data.getStatus().isHasCreatedCharacter()) return;
+			if (isCharacterCreationScreen(mc.gui.screen())) return;
+			if (mc.gui.screen() instanceof PauseScreen) return;
+			UtilityMenuBlur.stop();
+			mc.gui.setScreen(new RaceSelectionScreen(data.getCharacter()));
+			characterCreationOpenCooldownTicks = CHARACTER_CREATION_OPEN_COOLDOWN;
+			opened[0] = true;
+		});
+		return opened[0];
+	}
+
+	@SubscribeEvent
+	public static void onClientTick(ClientTickEvent.Pre event) {
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.player == null || mc.level == null || !CameraAimHelper.hasLocalSokidan(mc.level)) return;
+		Vec3 aim = cameraAim(mc);
+		CameraAimHelper.store(mc.player, aim);
+		NetworkHandler.sendToServer(SokidanControlC2S.aim(aim));
+	}
+
+	@SubscribeEvent
+	public static void onClientTick(ClientTickEvent.Post event) {
+
+		Minecraft mc = Minecraft.getInstance();
+		TransformationPostShaderManager.tick();
+		if (mc.player == null || mc.level == null) {
+			CameraAimHelper.clearLocalSokidans();
+			return;
+		}
+		if (characterCreationOpenCooldownTicks > 0) characterCreationOpenCooldownTicks--;
+		handleUtilityMenuHold(mc);
+
+		if (pendingCharacterCreationReopen && mc.gui.screen() == null) {
+			if (isHasCreatedCharacterCache) pendingCharacterCreationReopen = false;
+			StatsProvider.get(StatsCapability.INSTANCE, mc.player).ifPresent(data -> {
+				if (data.getStatus().isHasCreatedCharacter()) {
+					isHasCreatedCharacterCache = true;
+					pendingCharacterCreationReopen = false;
+				}
+			});
+			if (openCharacterCreationScreen(mc)) pendingCharacterCreationReopen = false;
+		}
+
+		if (mc.options.keyAttack.isDown()) {
+			float cappedDelay = PlayerAttackHelper.getAttackCooldownTicksCapped(mc.player);
+			int ticker = ((LivingEntityAccessor) mc.player).getAttackStrengthTicker();
+			float cooldownProgress = Mth.clamp((ticker + 0.5F) / cappedDelay, 0.0F, 1.0F);
+			if (cooldownProgress >= 1.0F) {
+				((MinecraftAccessor) mc).setAttackCooldown(0);
+			}
+		}
+
+		if (mc.gui.screen() == null) {
+			openCharacterCreationScreen(mc);
+		}
+
+		tickCounter++;
+		if (tickCounter >= UPDATE_INTERVAL) {
+			tickCounter = 0;
+			StatsProvider.get(StatsCapability.INSTANCE, mc.player).ifPresent(data -> {
+				if (isHasCreatedCharacterCache != data.getStatus().isHasCreatedCharacter()) {
+					isHasCreatedCharacterCache = data.getStatus().isHasCreatedCharacter();
+				}
+
+				if (!data.isDataLoaded()) return;
+				if (data.getStatus().isHasCreatedCharacter()) return;
+			});
+		}
+
+		String current = mc.options.languageCode;
+		if (!current.equals(lastLang)) {
+			lastLang = current;
+			if (CrowdinManager.isLiveTranslationsEnabled()) {
+				CrowdinManager.fetchLanguage(current);
+			}
+		}
+	}
+
+	private static Vec3 cameraAim(Minecraft mc) {
+		var look = mc.gameRenderer.mainCamera().forwardVector();
+		return new Vec3(look.x(), look.y(), look.z());
+	}
+
+	private static void handleUtilityMenuHold(Minecraft mc) {
+		boolean utilityHeld = isUtilityMenuKeyHeld(mc);
+
+		if (mc.gui.screen() instanceof UtilityMenuScreen utilityScreen) {
+			if (!utilityHeld) utilityScreen.startClosingAnimation();
+			return;
+		}
+
+		if (!utilityHeld) return;
+		if (mc.gui.screen() != null) return;
+		if (UtilityMenuScreen.isUtilityMenuReopenBlocked()) return;
+
+		StatsProvider.get(StatsCapability.INSTANCE, mc.player).ifPresent(data -> {
+			if (!data.getStatus().isHasCreatedCharacter()) return;
+			mc.gui.setScreen(new UtilityMenuScreen());
+			mc.player.playSound(MainSounds.UI_MENU_SWITCH.get());
+		});
+	}
+
+	private static boolean isUtilityMenuKeyHeld(Minecraft mc) {
+		if (mc == null || mc.getWindow() == null) return false;
+		InputConstants.Key key = KeyBinds.UTILITY_MENU.getKey();
+		com.mojang.blaze3d.platform.Window window = mc.getWindow();
+
+		if (key.getType() == InputConstants.Type.KEYSYM) {
+			return InputConstants.isKeyDown(window, key.getValue());
+		}
+		if (key.getType() == InputConstants.Type.MOUSE) {
+			return GLFW.glfwGetMouseButton(window.handle(), key.getValue()) == GLFW.GLFW_PRESS;
+		}
+		return false;
+	}
+
+	@SubscribeEvent
+	public static void onRenderLevelStage(RenderLevelStageEvent.AfterTranslucentParticles event) {
+		// 26.2: the Stage enum is gone, so the old AFTER_PARTICLES guard is now the event type.
+		TransformationPostShaderManager.flushMaskAndApplyUniforms(Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaPartialTick(false), event.getPoseStack());
+	}
+
+	@SubscribeEvent
+	public static void onClientDisconnect(ClientPlayerNetworkEvent.LoggingOut event) {
+		com.dragonminez.client.gui.hud.NotificationHUD.clear();
+		com.dragonminez.client.render.shader.FullscreenPostEffect.onResourceReload();
+                com.dragonminez.client.render.effects.Aura3DRenderer.reset();
+                com.dragonminez.client.render.effects.AuraBorderRenderer.reset();
+                com.dragonminez.client.render.shader.EffectBloomRenderer.reset();
+                com.dragonminez.client.render.shader.TransformationOutlineRenderer.reset();
+                com.dragonminez.client.render.shader.KiBloomRenderer.reset();
+		CameraAimHelper.clearLocalSokidans();
+		com.dragonminez.client.util.SkinGathererProvider.clearShadedLayers();
+        ConfigManager.clearServerSync();
+		DMZRendererCache.clear();
+		TextureCounter.clearCache();
+		pendingCharacterCreationReopen = false;
+		characterCreationOpenCooldownTicks = 0;
+	}
+
+}
+

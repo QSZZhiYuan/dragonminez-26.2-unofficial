@@ -1,0 +1,142 @@
+package com.dragonminez.common.init.entities.animal;
+
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.control.FlyingMoveControl;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.MeleeAttackGoal;
+import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
+import net.minecraft.world.entity.ai.goal.WaterAvoidingRandomFlyingGoal;
+import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
+import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
+import net.minecraft.world.entity.ai.navigation.FlyingPathNavigation;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
+import com.geckolib.animatable.GeoEntity;
+import com.geckolib.animatable.GeoAnimatable;
+import com.geckolib.animatable.instance.AnimatableInstanceCache;
+import com.geckolib.animatable.instance.SingletonAnimatableInstanceCache;
+import com.geckolib.animatable.manager.AnimatableManager;
+import com.geckolib.animation.AnimationController;
+import com.geckolib.animation.state.AnimationTest;
+import com.geckolib.animation.RawAnimation;
+import com.geckolib.animation.object.PlayState;
+
+public class DinoFlyEntity extends Monster implements GeoEntity {
+
+    private final AnimatableInstanceCache geoCache = new SingletonAnimatableInstanceCache(this);
+    private boolean isAttacking = false;
+
+    public DinoFlyEntity(EntityType<? extends Monster> pEntityType, Level pLevel) {
+        super(pEntityType, pLevel);
+
+        this.moveControl = new FlyingMoveControl(this, 20, true);
+    }
+
+    @Override
+    protected PathNavigation createNavigation(Level pLevel) {
+        FlyingPathNavigation navigation = new FlyingPathNavigation(this, this.level());
+        navigation.setCanOpenDoors(false);
+        navigation.setCanFloat(true);
+        // 26.2: PathNavigation#setCanPassDoors was removed.
+        return navigation;
+    }
+
+    public static AttributeSupplier.Builder createAttributes() {
+        return Monster.createMonsterAttributes()
+                .add(Attributes.MAX_HEALTH, 80.0D)
+                .add(Attributes.MOVEMENT_SPEED, 0.20D)
+                .add(Attributes.ATTACK_DAMAGE, 20.0D)
+                .add(Attributes.FLYING_SPEED, 0.6D)
+                .add(Attributes.KNOCKBACK_RESISTANCE, 0.6D);
+    }
+
+    @Override
+    protected void registerGoals() {
+        this.goalSelector.addGoal(1, new WaterAvoidingRandomFlyingGoal(this, 1.0D));
+
+        this.goalSelector.addGoal(2, new MeleeAttackGoal(this, 1.2D, false));
+        this.goalSelector.addGoal(3, new LookAtPlayerGoal(this, Player.class, 8.0F));
+        this.goalSelector.addGoal(4, new RandomLookAroundGoal(this));
+
+        this.targetSelector.addGoal(1, new HurtByTargetGoal(this));
+        this.targetSelector.addGoal(2, new NearestAttackableTargetGoal<>(this, Player.class, true));
+    }
+
+    @Override
+    public boolean causeFallDamage(double pFallDistance, float pMultiplier, DamageSource pSource) {
+        return false;
+    }
+
+    @Override
+    protected void checkFallDamage(double pY, boolean pOnGround, BlockState pState, BlockPos pPos) {
+
+    }
+
+    @Override
+    public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
+
+        controllers.add(new AnimationController<>("base_controller", 5, this::walkPredicate));
+
+        controllers.add(new AnimationController<>("attack_controller", 0, this::attackPredicate));
+
+        controllers.add(new AnimationController<>("tail_controller", 0, this::tailPredicate));
+    }
+
+    private <T extends GeoAnimatable> PlayState walkPredicate(AnimationTest<T> event) {
+        if (event.isMoving()) {
+            event.setAnimation(RawAnimation.begin().thenLoop("walk"));
+            return PlayState.CONTINUE;
+        }
+        if (!this.onGround()) {
+            event.setAnimation(RawAnimation.begin().thenLoop("idle"));
+            return PlayState.CONTINUE;
+        }
+        event.setAnimation(RawAnimation.begin().thenLoop("idle"));
+        return PlayState.CONTINUE;
+    }
+
+    private <T extends GeoAnimatable> PlayState attackPredicate(AnimationTest<T> event) {
+        DinoFlyEntity entity = (DinoFlyEntity) event.animatable();
+
+        if (entity.swingTime > 0 && !isAttacking) {
+            isAttacking = true;
+
+            event.controller().reset();
+
+            event.setAnimation(RawAnimation.begin().thenPlay("attack"));
+
+            return PlayState.CONTINUE;
+        }
+
+        if (isAttacking) {
+            if (event.controller().hasAnimationFinished()) {
+                isAttacking = false;
+                return PlayState.STOP;
+            }
+            return PlayState.CONTINUE;
+        }
+
+        return PlayState.STOP;
+    }
+
+    private <T extends GeoAnimatable> PlayState tailPredicate(AnimationTest<T> event) {
+
+        event.setAnimation(RawAnimation.begin().thenLoop("tail"));
+
+        return PlayState.CONTINUE;
+    }
+
+    @Override
+    public AnimatableInstanceCache getAnimatableInstanceCache() {
+        return geoCache;
+    }
+}
+

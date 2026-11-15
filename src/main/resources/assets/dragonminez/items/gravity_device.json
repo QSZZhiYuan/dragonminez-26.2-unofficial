@@ -1,0 +1,9 @@
+{
+  "model": {
+    "type": "minecraft:special",
+    "base": "dragonminez:item/gravity_device",
+    "model": {
+      "type": "geckolib:geckolib"
+    }
+  }
+}

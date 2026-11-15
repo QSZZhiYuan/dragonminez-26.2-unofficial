@@ -1,0 +1,8 @@
+{
+  "sound_event": "dragonminez:menu_music_3",
+  "description": {
+    "translate": "item.dragonminez.music_disc_menu_music_3"
+  },
+  "length_in_seconds": 46.0,
+  "comparator_output": 3
+}

@@ -1,0 +1,141 @@
+package com.dragonminez.common.config;
+
+import com.dragonminez.Env;
+import com.dragonminez.LogUtil;
+import com.dragonminez.common.diagnostics.JsonLoadReport;
+import com.dragonminez.common.diagnostics.JsonSchema;
+import com.google.gson.Gson;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonSyntaxException;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.HashMap;
+import java.util.Map;
+
+public class ConfigLoader {
+	private final Gson gson;
+
+	/**
+	 * Explicit no-arg-generating constructor kept alongside {@code @AllArgsConstructor}.
+	 *
+	 * <p>lombok annotations are skipped for a type whenever javac has already put it (or anything
+	 * it depends on) into an error state. During the 26.2 port that silently removed generated
+	 * members from otherwise-clean classes and produced a long chain of "cannot find symbol"
+	 * errors far away from the real problem. Declaring the constructor by hand removes this class
+	 * from that chain.
+	 */
+	public ConfigLoader(Gson gson) {
+		this.gson = gson;
+	}
+
+	public <T> T loadConfig(Path path, Class<T> clazz) throws IOException {
+		try {
+			String content = Files.readString(path, StandardCharsets.UTF_8);
+			JsonElement tree = gson.fromJson(content, JsonElement.class);
+			if (tree != null && tree.isJsonObject()) {
+				JsonSchema.check("config", path.getFileName().toString(), "", tree.getAsJsonObject(), clazz);
+			}
+			return gson.fromJson(tree, clazz);
+		} catch (JsonSyntaxException e) {
+			throw new IOException("Invalid JSON syntax in file: " + path.getFileName(), e);
+		} catch (Exception e) {
+			throw new IOException("Failed to parse config file: " + path.getFileName(), e);
+		}
+	}
+
+	public void saveConfig(Path path, Object config) throws IOException {
+		String jsonContent = gson.toJson(config);
+		Files.writeString(path, jsonContent, StandardCharsets.UTF_8);
+	}
+
+	public Map<String, FormConfig> loadRaceForms(String raceName, Path formsPath) throws IOException {
+		Map<String, FormConfig> forms = new HashMap<>();
+
+		if (!Files.exists(formsPath)) {
+			return forms;
+		}
+
+		try (var stream = Files.list(formsPath)) {
+			stream.filter(path -> path.toString().endsWith(".json"))
+					.filter(path -> !path.getFileName().toString().toLowerCase().startsWith("old_"))
+					.forEach(formFile -> {
+						try {
+							FormConfig formConfig = loadConfig(formFile, FormConfig.class);
+							if (formConfig == null) {
+								LogUtil.error(Env.COMMON, "Form file '{}' is empty or null.", formFile.getFileName());
+								return;
+							}
+
+							String groupName = formConfig.getGroupName();
+							if (groupName != null && !groupName.isEmpty()) {
+								forms.put(groupName.toLowerCase(), formConfig);
+								LogUtil.info(Env.COMMON, "Form group '{}' loaded for race '{}'", groupName, raceName);
+							}
+						} catch (IOException e) {
+							LogUtil.error(Env.COMMON, "Error loading form file '{}' for race '{}': {}", formFile.getFileName(), raceName, e.getMessage());
+							JsonLoadReport.error("config", "races/" + raceName + "forms/" + formFile.getFileName(),
+									"Malformed form JSON, file skipped: " + JsonLoadReport.rootCause(e));
+						}
+					});
+		}
+
+		return forms;
+	}
+
+	public Map<String, FormConfig> loadStackForms(Path formsPath) throws IOException {
+		Map<String, FormConfig> forms = new HashMap<>();
+
+		if (!Files.exists(formsPath)) {
+			return forms;
+		}
+
+		try (var stream = Files.list(formsPath)) {
+			stream.filter(path -> path.toString().endsWith(".json"))
+					.filter(path -> !path.getFileName().toString().toLowerCase().startsWith("old_"))
+					.forEach(formFile -> {
+						try {
+							FormConfig formConfig = loadConfig(formFile, FormConfig.class);
+							if (formConfig == null) return;
+
+							String groupName = formConfig.getGroupName();
+							if (groupName != null && !groupName.isEmpty()) {
+								forms.put(groupName.toLowerCase(), formConfig);
+								LogUtil.info(Env.COMMON, "Form group '{}' loaded for stack forms", groupName);
+							}
+						} catch (IOException e) {
+							LogUtil.error(Env.COMMON, "Error loading stack form file '{}': {}", formFile.getFileName(), e.getMessage());
+							JsonLoadReport.error("config", "forms/" + formFile.getFileName(),
+									"Malformed stack-form JSON, file skipped: " + JsonLoadReport.rootCause(e));
+						}
+					});
+		}
+
+		return forms;
+	}
+
+	public void saveDefaultFromTemplate(Path target, String templateName) {
+		try (var inputStream = getClass().getResourceAsStream("assets/dragonminez/config_defaults/" + templateName)) {
+			if (inputStream != null) {
+				Files.copy(inputStream, target);
+				LogUtil.info(Env.COMMON, "Created default config from template: {}", templateName);
+			} else {
+				LogUtil.error(Env.COMMON, "Template not found: {}", templateName);
+			}
+		} catch (IOException e) {
+			LogUtil.error(Env.COMMON, "Could not copy default config: {}", e.getMessage());
+		}
+	}
+
+	public boolean hasExistingFiles(Path directory) throws IOException {
+		if (!Files.exists(directory)) {
+			return false;
+		}
+
+		try (var stream = Files.list(directory)) {
+			return stream.anyMatch(path -> path.toString().endsWith(".json"));
+		}
+	}
+}

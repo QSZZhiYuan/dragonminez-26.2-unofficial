@@ -1,0 +1,170 @@
+package com.dragonminez.common.init.entities;
+
+import com.dragonminez.common.init.entities.sagas.helper.DBSagasAnimationHandler;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.alignment.NpcDispositionService;
+import com.dragonminez.common.combat.logic.player.TargetHelper;
+import com.dragonminez.common.network.S2C.OpenQuestNPCDialogueS2C;
+import com.dragonminez.common.quest.QuestService;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
+import net.minecraft.world.entity.*;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.ai.goal.FloatGoal;
+import net.minecraft.world.entity.ai.goal.LookAtPlayerGoal;
+import net.minecraft.world.entity.ai.goal.RandomLookAroundGoal;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.Level;
+import com.geckolib.animatable.GeoEntity;
+import com.geckolib.animatable.instance.AnimatableInstanceCache;
+import com.geckolib.animatable.instance.SingletonAnimatableInstanceCache;
+import com.geckolib.animatable.manager.AnimatableManager;
+import com.geckolib.animation.AnimationController;
+import com.geckolib.animation.RawAnimation;
+
+public class MastersEntity extends PathfinderMob implements GeoEntity {
+	private final AnimatableInstanceCache geoCache = new SingletonAnimatableInstanceCache(this);
+	private static final EntityDataAccessor<Float> SCALE_VAL = SynchedEntityData.defineId(MastersEntity.class, EntityDataSerializers.FLOAT);
+	protected String masterName = null;
+
+	protected MastersEntity(EntityType<? extends PathfinderMob> pEntityType, Level pLevel) {
+		super(pEntityType, pLevel);
+		this.setPersistenceRequired();
+	}
+
+	@Override
+	protected void registerGoals() {
+		this.goalSelector.addGoal(0, new FloatGoal(this));
+		this.goalSelector.addGoal(1, new LookAtPlayerGoal(this, Player.class, 8.0F));
+		this.goalSelector.addGoal(2, new RandomLookAroundGoal(this));
+	}
+
+	public static AttributeSupplier.Builder createAttributes() {
+		return PathfinderMob.createMobAttributes().add(Attributes.MAX_HEALTH, 100.0).add(Attributes.MOVEMENT_SPEED, 2.0).add(Attributes.KNOCKBACK_RESISTANCE, 1.0);
+	}
+
+	@Override
+	public boolean canBeCollidedWith(net.minecraft.world.entity.Entity entity) {
+		return false;
+	}
+
+	@Override
+	public boolean canCollideWith(Entity entity) {
+		return !(entity instanceof Player);
+	}
+
+	@Override
+	public boolean canBeHitByProjectile() {
+		return false;
+	}
+
+	@Override
+	public boolean isPushable() {
+		return false;
+	}
+
+	@Override
+	protected void doPush(Entity p_20971_) {
+	}
+
+	@Override
+	public boolean hurtServer(ServerLevel level, DamageSource source, float amount) {
+		if (source.is(DamageTypes.FELL_OUT_OF_WORLD) || source.is(DamageTypes.GENERIC_KILL)) {
+			return super.hurtServer(level, source, amount);
+		}
+		return false;
+	}
+
+	@Override
+	public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
+		controllers.add(new AnimationController<>("controller", 0, event -> {
+			return event.setAndContinue(RawAnimation.begin().thenLoop("idle"));
+		}));
+		if ("frieza".equals(this.masterName)) controllers.add(new AnimationController<>("tail_controller", 5, DBSagasAnimationHandler::tailPredicate));
+	}
+
+	@Override
+	public AnimatableInstanceCache getAnimatableInstanceCache() {
+		return geoCache;
+	}
+
+	@Override
+	public boolean isPersistenceRequired() {
+		return true;
+	}
+
+	@Override
+	public void checkDespawn() {
+	}
+
+	public void setScaleVal(float scale) {
+		this.entityData.set(SCALE_VAL, scale);
+	}
+
+	/**
+	 * Custom entity scale. Renamed from getScale(): LivingEntity#getScale() is final in 26.2.
+	 */
+	public float getModelScale() {
+		float customScale = this.entityData.get(SCALE_VAL);
+		return customScale > 0.0F ? customScale : 1.0F;
+	}
+	@Override
+	protected void defineSynchedData(net.minecraft.network.syncher.SynchedEntityData.Builder builder) {
+		super.defineSynchedData(builder);
+		builder.define(SCALE_VAL, 1.0F);
+	}
+
+	@Override
+	public void addAdditionalSaveData(net.minecraft.world.level.storage.ValueOutput pCompound) {
+		super.addAdditionalSaveData(pCompound);
+		pCompound.putFloat("EntityScale", this.entityData.get(SCALE_VAL));
+	}
+
+	@Override
+	public void readAdditionalSaveData(net.minecraft.world.level.storage.ValueInput pCompound) {
+		super.readAdditionalSaveData(pCompound);
+		{
+			this.setScaleVal(pCompound.getFloatOr("EntityScale", 0.0F));
+		}
+	}
+
+	@Override
+	protected InteractionResult mobInteract(Player pPlayer, InteractionHand pHand) {
+		if (pHand != InteractionHand.MAIN_HAND) return InteractionResult.PASS;
+		if (!this.level().isClientSide() && pPlayer instanceof ServerPlayer serverPlayer && masterName != null) {
+			StatsProvider.get(StatsCapability.INSTANCE, serverPlayer).ifPresent(data -> {
+				if (!data.getStatus().isHasCreatedCharacter()) {
+					serverPlayer.sendSystemMessage(Component.translatable("gui.dragonminez.lines.generic.createcharacter"));
+					return;
+				}
+				Component blocker = NpcDispositionService.getDialogueBlocker(serverPlayer, this);
+				if (blocker != null) {
+					serverPlayer.sendSystemMessage(blocker);
+					return;
+				}
+				QuestService.NPCQuestOptions options = QuestService.collectNpcQuestOptions(masterName, data);
+				NetworkHandler.sendToPlayer(new OpenQuestNPCDialogueS2C(masterName, options.offerableQuestIds(), options.turnInQuestIds(), options.inProgressQuestIds(), true, getId()), serverPlayer);
+			});
+			return InteractionResult.SUCCESS;
+		}
+		return InteractionResult.SUCCESS;
+	}
+
+	@java.lang.SuppressWarnings("all")
+	public String getMasterName() {
+		return this.masterName;
+	}
+}
+

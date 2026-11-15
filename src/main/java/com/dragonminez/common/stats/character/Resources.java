@@ -1,0 +1,410 @@
+package com.dragonminez.common.stats.character;
+
+import com.dragonminez.common.events.DMZEvent;
+import com.dragonminez.common.stats.StatsData;
+import com.dragonminez.server.dynamicgrowth.DynamicGrowthService;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
+import net.neoforged.neoforge.common.NeoForge;
+
+public class Resources {
+    private float currentEnergy;
+    private float currentStamina;
+    private float currentPoise;
+    private float surgeCharge;
+    private float rage;
+    private int release;
+    private int releaseLimit;
+    private int flightSpeedLimit = 100;
+    private int actionCharge;
+    private int alignment;
+    private float trainingPoints;
+    private int pendingAttributePoints;
+    private int racialSkillCount;
+    private Player player;
+    private transient StatsData statsData;
+
+    public Resources() {
+        this.currentEnergy = 0;
+        this.currentStamina = 0;
+        this.currentPoise = 0;
+        this.release = 5;
+        this.releaseLimit = 0;
+        this.flightSpeedLimit = 100;
+        this.actionCharge = 0;
+        this.alignment = 100;
+        this.trainingPoints = 0;
+        this.pendingAttributePoints = 0;
+        this.racialSkillCount = 0;
+    }
+
+    public void reset() {
+        this.surgeCharge = 0;
+        this.rage = 0;
+        this.currentEnergy = 0;
+        this.currentStamina = 0;
+        this.currentPoise = 0;
+        this.release = 5;
+        this.releaseLimit = 0;
+        this.flightSpeedLimit = 100;
+        this.actionCharge = 0;
+        this.alignment = 100;
+        this.racialSkillCount = 0;
+    }
+
+    private static float roundToQuarter(float value) {
+        return Math.round(value * 4.0F) / 4.0F;
+    }
+
+    private static float truncateToInt(float value) {
+        return (float) Math.floor(value);
+    }
+
+    private static final float LARGE_POOL_THRESHOLD = 1_000_000.0F;
+
+    /**
+     * Clamp ki/stamina with double math so pools at high ENE/RES (1e8–1e9 max) can reach max.
+     * Quarter steps only below {@link #LARGE_POOL_THRESHOLD}.
+     */
+    private static float clampPool(double value, float max) {
+        if (!(max > 0.0F) || !Double.isFinite(value)) {
+            return 0.0F;
+        }
+        double v = Math.min(Math.max(0.0, value), (double) max);
+        if (v >= (double) max - Math.max(4.0 * Math.ulp(max), 1.0)) {
+            return max;
+        }
+        if (v < LARGE_POOL_THRESHOLD) {
+            return roundToQuarter((float) v);
+        }
+        return (float) v;
+    }
+
+    public int getPowerRelease() {
+        return release;
+    }
+
+    public float getSurgeCharge() { return surgeCharge; }
+
+    public void setSurgeCharge(float value) {
+        surgeCharge = Float.isFinite(value) ? Math.clamp(value, 0.0f, 100.0f) : 0.0f;
+    }
+
+    public boolean isSurgeFull() { return surgeCharge >= 100.0f; }
+
+    public float getRage() { return rage; }
+    public void setRage(float value) { rage = Float.isFinite(value) ? Math.clamp(value, 0.0f, 100.0f) : 0.0f; }
+    public boolean isRageFull() { return rage >= 100.0f; }
+
+    public void setCurrentEnergy(float energy) {
+        if (energy <= 1) setPowerRelease(0);
+        float max = statsData != null ? statsData.getMaxEnergy() : 0.0F;
+        this.currentEnergy = clampPool(energy, max);
+    }
+
+    public void setCurrentStamina(float stamina) {
+        float max = statsData != null ? Math.max(0.0F, statsData.getMaxStamina()) : 0.0F;
+        this.currentStamina = clampPool(stamina, max);
+    }
+
+    public void setCurrentPoise(float poise) {
+        float max = statsData != null ? statsData.getMaxPoise() : 0.0F;
+        this.currentPoise = roundToQuarter((float) Math.min(Math.max(0.0, (double) poise), Math.max(0.0, (double) max)));
+    }
+
+    public void setPowerRelease(int release) {
+        this.release = Math.max(0, release);
+    }
+
+    public void setReleaseLimit(int releaseLimit) {
+        this.releaseLimit = Math.max(0, releaseLimit);
+    }
+
+    public void setActionCharge(int actionCharge) {
+        this.actionCharge = Math.max(0, Math.min(100, actionCharge));
+    }
+
+    public void setAlignment(int alignment) {
+        if (statsData != null && statsData.getEffects().hasEffect("majin")) {
+            this.alignment = 0;
+            return;
+        }
+        this.alignment = Math.max(0, Math.min(100, alignment));
+    }
+
+    public void setTrainingPoints(float points) {
+        float clamped = Math.max(0, Math.min(Float.MAX_VALUE - 1, points));
+        this.trainingPoints = truncateToInt(clamped);
+    }
+
+    public void setPendingAttributePoints(int points) {
+        this.pendingAttributePoints = Math.max(0, points);
+    }
+
+    public void addPendingAttributePoints(int amount) {
+        setPendingAttributePoints(pendingAttributePoints + amount);
+    }
+
+    public void removePendingAttributePoints(int amount) {
+        setPendingAttributePoints(pendingAttributePoints - amount);
+    }
+
+    public void setRacialSkillCount(int count) {
+        this.racialSkillCount = Math.max(0, count);
+    }
+
+    public void addEnergy(float amount) {
+        setCurrentEnergy((float) ((double) currentEnergy + (double) amount));
+    }
+
+    public void addStamina(float amount) {
+        setCurrentStamina((float) ((double) currentStamina + (double) amount));
+    }
+
+    public void addPoise(float amount) {
+        setCurrentPoise(currentPoise + amount);
+    }
+
+    /**
+     * When max energy/stamina grows (VIT-style heal for pools): grant the delta with double math,
+     * or snap full if the bar was full before.
+     */
+    public void grantMaxPoolIncrease(float oldMax, float newMax, boolean energy) {
+        if (!(newMax > oldMax)) return;
+        double cur = energy ? currentEnergy : currentStamina;
+        boolean wasFull = oldMax <= 0.0F || cur >= (double) oldMax - Math.max(4.0 * Math.ulp(oldMax), 1.0);
+        if (wasFull) {
+            if (energy) setCurrentEnergy(newMax);
+            else setCurrentStamina(newMax);
+            return;
+        }
+        double next = cur + ((double) newMax - (double) oldMax);
+        if (energy) setCurrentEnergy((float) Math.min(newMax, next));
+        else setCurrentStamina((float) Math.min(newMax, next));
+    }
+
+    /** After login / max recompute: snap near-full float pools to exact max; never invent fill. */
+    public void reclampToCurrentMax() {
+        if (statsData == null) return;
+        float maxE = statsData.getMaxEnergy();
+        float maxS = statsData.getMaxStamina();
+        float maxP = statsData.getMaxPoise();
+        if (maxE > 0.0F) this.currentEnergy = clampPool(this.currentEnergy, maxE);
+        if (maxS > 0.0F) this.currentStamina = clampPool(this.currentStamina, maxS);
+        if (maxP > 0.0F) {
+            this.currentPoise = roundToQuarter((float) Math.min(Math.max(0.0, (double) this.currentPoise), (double) maxP));
+        }
+    }
+
+    public void addAlignment(int amount) {
+        setAlignment(alignment + amount);
+    }
+
+    public void addTrainingPoints(float amount) {
+        addTrainingPoints(amount, true);
+    }
+
+    public void addTrainingPoints(float amount, boolean shareWithParty) {
+        if (amount <= 0 || player == null) {
+            setTrainingPoints(trainingPoints + amount);
+            return;
+        }
+        float oldValue = this.trainingPoints;
+        DMZEvent.TPGainEvent event = new DMZEvent.TPGainEvent(player, (int) oldValue, (int) amount, shareWithParty);
+        if (!NeoForge.EVENT_BUS.post(event).isCanceled()) {
+            setTrainingPoints(oldValue + event.getTpGain());
+        }
+    }
+
+    public void addRacialSkillCount(int amount) {
+        setRacialSkillCount(racialSkillCount + amount);
+    }
+
+    public void removeEnergy(float amount) {
+        removeEnergy(amount, true);
+    }
+
+    public void removeEnergy(float amount, boolean drainsSurge) {
+        float before = currentEnergy;
+        boolean active = statsData != null && statsData.getStatus().isSurgeActive();
+        float requested = drainsSurge && amount > 0 && active
+                ? (float) (amount * com.dragonminez.common.config.ConfigManager.getCombatConfig().getSurgeKiCostMultiplier()) : amount;
+        setCurrentEnergy(currentEnergy - requested);
+        float spent = before - currentEnergy;
+        awardDynamicGrowthEnergy(spent);
+        if (drainsSurge && spent > 0 && surgeCharge > 0 && statsData != null && player instanceof ServerPlayer) {
+            float max = statsData.getMaxEnergy();
+            if (max > 0) setSurgeCharge(surgeCharge - (float) (spent / (double) max * 100.0
+                    * com.dragonminez.common.config.ConfigManager.getCombatConfig().getSurgeDrainPerKiFraction()));
+        }
+    }
+
+    public void removeStamina(float amount) {
+        float before = currentStamina;
+        setCurrentStamina(currentStamina - amount);
+        awardDynamicGrowthStamina(before - currentStamina);
+    }
+
+    private void awardDynamicGrowthStamina(float spent) {
+        if (spent > 0 && statsData != null && player instanceof ServerPlayer serverPlayer) {
+            DynamicGrowthService.awardStaminaSpent(serverPlayer, statsData, spent);
+        }
+    }
+
+    private void awardDynamicGrowthEnergy(float spent) {
+        if (spent > 0 && statsData != null && player instanceof ServerPlayer serverPlayer) {
+            DynamicGrowthService.awardEnergySpent(serverPlayer, statsData, spent);
+        }
+    }
+
+    public void removePoise(float amount) {
+        setCurrentPoise(currentPoise - amount);
+    }
+
+    public void removeAlignment(int amount) {
+        setAlignment(alignment - amount);
+    }
+
+    public void removeTrainingPoints(float amount) {
+        setTrainingPoints(trainingPoints - amount);
+    }
+
+    public CompoundTag save() {
+        CompoundTag tag = new CompoundTag();
+        tag.putFloat("CurrentEnergy", currentEnergy);
+        tag.putFloat("CurrentStamina", currentStamina);
+        tag.putFloat("CurrentPoise", currentPoise);
+        tag.putFloat("SurgeCharge", surgeCharge);
+        tag.putFloat("Rage", rage);
+        tag.putInt("Release", release);
+        tag.putInt("ReleaseLimit", releaseLimit);
+        tag.putInt("FlightSpeed", flightSpeedLimit);
+        tag.putInt("FormRelease", actionCharge);
+        tag.putInt("Alignment", alignment);
+        tag.putFloat("TrainingPointsF", trainingPoints);
+        tag.putInt("PendingAttributePoints", pendingAttributePoints);
+        tag.putInt("ZenkaiCount", racialSkillCount);
+        return tag;
+    }
+
+    public void load(CompoundTag tag) {
+        setSurgeCharge(tag.getFloatOr("SurgeCharge", 0.0f));
+        setRage(tag.getFloatOr("Rage", 0.0f));
+        if (tag.contains("CurrentEnergy")) this.currentEnergy = tag.getFloatOr("CurrentEnergy", 0.0F);
+         else this.currentEnergy = tag.getIntOr("CurrentEnergy", 0);
+        if (tag.contains("CurrentStamina")) this.currentStamina = tag.getFloatOr("CurrentStamina", 0.0F);
+         else this.currentStamina = tag.getIntOr("CurrentStamina", 0);
+        if (tag.contains("CurrentPoise")) this.currentPoise = tag.getFloatOr("CurrentPoise", 0.0F);
+         else this.currentPoise = tag.getIntOr("CurrentPoise", 0);
+        this.release = tag.getIntOr("Release", 0);
+        this.releaseLimit = tag.getIntOr("ReleaseLimit", 0);
+        setFlightSpeedLimit(tag.getIntOr("FlightSpeed", 100));
+        this.actionCharge = tag.getIntOr("FormRelease", 0);
+        this.alignment = tag.getIntOr("Alignment", 0);
+        if (tag.contains("TrainingPointsF")) this.trainingPoints = tag.getFloatOr("TrainingPointsF", 0.0F);
+         else this.trainingPoints = tag.getIntOr("TrainingPoints", 0);
+        this.pendingAttributePoints = tag.getIntOr("PendingAttributePoints", 0);
+        this.racialSkillCount = tag.getIntOr("ZenkaiCount", 0);
+    }
+
+    public void copyFrom(Resources other) {
+        this.surgeCharge = other.surgeCharge;
+        this.rage = other.rage;
+        this.currentEnergy = other.currentEnergy;
+        this.currentStamina = other.currentStamina;
+        this.currentPoise = other.currentPoise;
+        this.release = other.release;
+        this.releaseLimit = other.releaseLimit;
+        this.flightSpeedLimit = other.flightSpeedLimit;
+        this.actionCharge = other.actionCharge;
+        this.alignment = other.alignment;
+        this.trainingPoints = other.trainingPoints;
+        this.pendingAttributePoints = other.pendingAttributePoints;
+        this.racialSkillCount = other.racialSkillCount;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public float getCurrentEnergy() {
+        return this.currentEnergy;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public float getCurrentStamina() {
+        return this.currentStamina;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public float getCurrentPoise() {
+        return this.currentPoise;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public int getRelease() {
+        return this.release;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public int getReleaseLimit() {
+        return this.releaseLimit;
+    }
+
+    public int getFlightSpeedLimit() {
+        return flightSpeedLimit;
+    }
+
+    public void setFlightSpeedLimit(int flightSpeedLimit) {
+        this.flightSpeedLimit = flightSpeedLimit <= 0 ? 100 : Math.min(100, flightSpeedLimit);
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public int getActionCharge() {
+        return this.actionCharge;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public int getAlignment() {
+        return this.alignment;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public float getTrainingPoints() {
+        return this.trainingPoints;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public int getPendingAttributePoints() {
+        return this.pendingAttributePoints;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public int getRacialSkillCount() {
+        return this.racialSkillCount;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public Player getPlayer() {
+        return this.player;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public StatsData getStatsData() {
+        return this.statsData;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public void setRelease(final int release) {
+        this.release = release;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public void setPlayer(final Player player) {
+        this.player = player;
+    }
+
+    @java.lang.SuppressWarnings("all")
+    public void setStatsData(final StatsData statsData) {
+        this.statsData = statsData;
+    }
+}
+

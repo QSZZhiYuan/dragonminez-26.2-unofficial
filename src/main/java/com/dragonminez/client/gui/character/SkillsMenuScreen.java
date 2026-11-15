@@ -1,0 +1,1688 @@
+package com.dragonminez.client.gui.character;
+
+import com.dragonminez.Reference;
+import com.dragonminez.client.gui.buttons.ClippableTextureButton;
+import com.dragonminez.client.gui.buttons.CustomTextureButton;
+import com.dragonminez.client.gui.buttons.TexturedTextButton;
+import com.dragonminez.client.gui.character.util.BaseMenuScreen;
+import com.dragonminez.client.render.layer.DMZSkinLayer;
+import com.dragonminez.client.util.TextUtil;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.config.FormConfig;
+import com.dragonminez.common.config.GeneralServerConfig;
+import com.dragonminez.common.network.C2S.*;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.quest.Quest;
+import com.dragonminez.common.quest.QuestRegistry;
+import com.dragonminez.common.quest.QuestReward;
+import com.dragonminez.common.quest.Saga;
+import com.dragonminez.common.quest.rewards.SkillReward;
+import com.dragonminez.common.stats.*;
+import com.dragonminez.common.stats.character.Character;
+import com.dragonminez.common.stats.character.Status;
+import com.dragonminez.common.stats.skills.Skill;
+import com.dragonminez.common.stats.skills.Skills;
+import com.dragonminez.common.stats.techniques.*;
+import com.dragonminez.common.util.TransformationsHelper;
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.EditBox;
+import com.dragonminez.client.render.EntityPreviewRenderContext;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.LivingEntity;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.api.distmarker.OnlyIn;
+import org.joml.Quaternionf;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+@OnlyIn(Dist.CLIENT)
+public class SkillsMenuScreen extends BaseMenuScreen {
+
+	private static final Identifier STAT_BUTTONS = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/buttons/characterbuttons.png");
+	private static final Identifier MENU_BIG = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/menu/menubig.png");
+	private static final Identifier MENU_SMALL = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/menu/menusmall.png");
+	private static final Identifier BUTTONS_TEXTURE = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/buttons/characterbuttons.png");
+	private static final Identifier EXCLAMATION_MARK = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/quest/exclamation_mark_quest.png");
+
+	private static final int SKILL_ITEM_HEIGHT = 20;
+	private static final int MAX_VISIBLE_SKILLS = 8;
+	private static final int TECHNIQUE_BIND_SLOT_COUNT = Techniques.SLOT_COUNT;
+	private static final String NEW_SKILL_ENTRY = "__new_skill__";
+	private static final String CLASS_PASSIVE_ENTRY = "__class_passive__";
+	private static final List<String> PREVIEW_FORM_TYPE_ORDER = List.of("superforms", "androidforms", "legendaryforms", "godforms");
+
+	private enum SkillCategory {SKILLS, KI, FORMS, STRIKE, EVASION}
+
+	private SkillCategory currentCategory = SkillCategory.SKILLS;
+
+	private StatsData statsData;
+	private int tickCount = 0;
+
+	private String selectedSkill = null;
+
+	private float targetScroll = 0;
+	private float currentScroll = 0;
+	private float maxScroll = 0;
+
+	private float targetDescScroll = 0;
+	private float currentDescScroll = 0;
+	private float maxDescScroll = 0;
+
+	private boolean isDraggingMainScroll = false;
+	private boolean isDraggingDescScroll = false;
+	private boolean isBinding = false;
+	private boolean isImportingTechnique = false;
+
+	private ClippableTextureButton skillsButton, kiButton, formsButton, stacksButton, evasionButton;
+	private CustomTextureButton btnDmg, btnSize, btnSpeed, btnPen, btnCast, btnCd;
+	private float buttonRevealProgress = 0.0f;
+	private float formsTransitionProgress = 0.0f;
+	private float leftPanelHoverProgress = 0.0f;
+
+	private int currentLeftX = 12;
+	private int currentRightX = 0;
+
+	private EditBox techniqueImportBox;
+	private Component actionStatusText = Component.empty();
+	private int actionStatusTimer = 0;
+	private int actionStatusColor = 0xFFFFFF;
+
+	private static Component pendingImportStatusText = null;
+	private static int pendingImportStatusColor = 0xFFFFFF;
+	private static boolean pendingImportSuccess = false;
+
+	private TexturedTextButton upgradeButton;
+
+	private float formsPanX = 0;
+	private float formsPanY = 0;
+	private float formsZoom = 1.0f;
+	private boolean isDraggingForms = false;
+	private double dragFormStartX, dragFormStartY;
+	private float dragFormStartPanX, dragFormStartPanY;
+	private String selectedFormGroup = null;
+	private String selectedFormName = null;
+	private long lastFormClickTime = 0;
+	private final List<FormNode> formNodes = new ArrayList<>();
+
+	private static class FormNode {
+		String group;
+		String formType;
+		FormConfig.FormData data;
+		int x;
+		int y;
+
+		FormNode(String group, String formType, FormConfig.FormData data, int x, int y) {
+			this.group = group;
+			this.formType = formType;
+			this.data = data;
+			this.x = x;
+			this.y = y;
+		}
+	}
+
+	public SkillsMenuScreen() {
+		super(Component.translatable("gui.dragonminez.skills.tab.skills"));
+	}
+
+	@Override
+	protected void init() {
+		super.init();
+		updateStatsData();
+		initDynamicButtons();
+		if (currentCategory == SkillCategory.FORMS) buildFormsTree();
+	}
+
+	@Override
+	public void tick() {
+		super.tick();
+		tickCount++;
+		if (actionStatusTimer > 0) actionStatusTimer--;
+		consumePendingImportStatus();
+
+		if (tickCount >= 10) {
+			tickCount = 0;
+			updateStatsData();
+			if (!isBinding && !isImportingTechnique) refreshButtons();
+		}
+	}
+
+	private void updateStatsData() {
+		var player = Minecraft.getInstance().player;
+		if (player != null) {
+			StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+				this.statsData = data;
+			});
+		}
+	}
+
+	private void buildFormsTree() {
+		formNodes.clear();
+		if (statsData == null) return;
+		String race = statsData.getCharacter().getRaceName().toLowerCase(Locale.ROOT);
+		var skillsConfig = ConfigManager.getSkillsConfig();
+		List<TransformationsHelper.OrderedFormEntry> orderedForms = TransformationsHelper.getOrderedFormsForRace(race, PREVIEW_FORM_TYPE_ORDER);
+		Map<String, List<FormConfig.FormData>> groupedForms = new LinkedHashMap<>();
+		Map<String, String> groupTypes = new LinkedHashMap<>();
+
+		for (TransformationsHelper.OrderedFormEntry entry : orderedForms) {
+			if (entry.getFormData() == null) continue;
+			if (!skillsConfig.isSkillAllowedForRace(TransformationsHelper.getSkillNameForType(entry.getFormType()), race)) continue;
+			groupedForms.computeIfAbsent(entry.getGroupName(), k -> new ArrayList<>()).add(entry.getFormData());
+			groupTypes.putIfAbsent(entry.getGroupName(), entry.getFormType());
+		}
+
+		for (String stackSkill : skillsConfig.getStackSkills()) {
+			if (!skillsConfig.isSkillAllowedForRace(stackSkill, race)) continue;
+			FormConfig stackGroup = ConfigManager.getStackFormGroup(stackSkill);
+			if (stackGroup == null) continue;
+			List<FormConfig.FormData> stackForms = new ArrayList<>(stackGroup.getForms().values());
+			if (stackForms.isEmpty()) continue;
+			groupedForms.computeIfAbsent(stackGroup.getGroupName(), k -> new ArrayList<>()).addAll(stackForms);
+			groupTypes.putIfAbsent(stackGroup.getGroupName(), stackGroup.getFormType());
+		}
+
+		int groupY = -(groupedForms.size() * 80) / 2;
+
+		for (Map.Entry<String, List<FormConfig.FormData>> group : groupedForms.entrySet()) {
+			int formX = -(group.getValue().size() * 80) / 2;
+			String groupName = group.getKey();
+			String type = groupTypes.getOrDefault(groupName, "superforms");
+
+			for (FormConfig.FormData form : group.getValue()) {
+				formNodes.add(new FormNode(groupName, type, form, formX, groupY));
+				formX += 80;
+			}
+			groupY += 80;
+		}
+	}
+
+	private void initDynamicButtons() {
+		int leftPanelX = 12;
+		int centerY = getUiHeight() / 2;
+		int leftPanelY = centerY - 105;
+
+		int buttonY = leftPanelY + 6;
+		int hiddenX = leftPanelX + 122;
+		int scissorX = leftPanelX + 141;
+		int scissorXScreen = toScissorCoord(scissorX);
+		int scissorYScreen = toScissorCoord(0);
+		int scissorRight = toScissorCoord(getUiWidth());
+		int scissorBottom = toScissorCoord(getUiHeight());
+
+		skillsButton = new ClippableTextureButton.Builder()
+				.position(hiddenX, buttonY)
+				.size(26, 32)
+				.texture(MENU_BIG)
+				.textureCoords(142, 44, 142, 44)
+				.clipping(true, scissorXScreen, scissorYScreen, scissorRight, scissorBottom)
+				.onPress(btn -> {
+					currentCategory = SkillCategory.SKILLS;
+					selectedSkill = null;
+					targetScroll = 0;
+					currentScroll = 0;
+					targetDescScroll = 0;
+					currentDescScroll = 0;
+					refreshButtons();
+				})
+				.build();
+
+		kiButton = new ClippableTextureButton.Builder()
+				.position(hiddenX, buttonY + 32)
+				.size(26, 32)
+				.texture(MENU_BIG)
+				.textureCoords(170, 44, 170, 44)
+				.clipping(true, scissorXScreen, scissorYScreen, scissorRight, scissorBottom)
+				.onPress(btn -> {
+					currentCategory = SkillCategory.KI;
+					selectedSkill = null;
+					targetScroll = 0;
+					currentScroll = 0;
+					targetDescScroll = 0;
+					currentDescScroll = 0;
+					refreshButtons();
+				})
+				.build();
+
+		formsButton = new ClippableTextureButton.Builder()
+				.position(hiddenX, buttonY + 64)
+				.size(26, 32)
+				.texture(MENU_BIG)
+				.textureCoords(198, 44, 198, 44)
+				.clipping(true, scissorXScreen, scissorYScreen, scissorRight, scissorBottom)
+				.onPress(btn -> {
+					currentCategory = SkillCategory.FORMS;
+					selectedSkill = null;
+					selectedFormName = null;
+					selectedFormGroup = null;
+					buildFormsTree();
+					targetScroll = 0;
+					currentScroll = 0;
+					targetDescScroll = 0;
+					currentDescScroll = 0;
+					refreshButtons();
+				})
+				.build();
+
+		stacksButton = new ClippableTextureButton.Builder()
+				.position(hiddenX, buttonY + 96)
+				.size(26, 32)
+				.texture(MENU_BIG)
+				.textureCoords(226, 44, 226, 44)
+				.clipping(true, scissorXScreen, scissorYScreen, scissorRight, scissorBottom)
+				.onPress(btn -> {
+					currentCategory = SkillCategory.STRIKE;
+					selectedSkill = null;
+					targetScroll = 0;
+					currentScroll = 0;
+					targetDescScroll = 0;
+					currentDescScroll = 0;
+					refreshButtons();
+				})
+				.build();
+
+		evasionButton = new ClippableTextureButton.Builder()
+				.position(hiddenX, buttonY + 128)
+				.size(26, 32)
+				.texture(MENU_BIG)
+				.textureCoords(142, 77, 142, 77)
+				.clipping(true, scissorXScreen, scissorYScreen, scissorRight, scissorBottom)
+				.onPress(btn -> {
+					currentCategory = SkillCategory.EVASION;
+					selectedSkill = null;
+					targetScroll = 0;
+					currentScroll = 0;
+					targetDescScroll = 0;
+					currentDescScroll = 0;
+					refreshButtons();
+				})
+				.build();
+
+		this.addRenderableWidget(skillsButton);
+		this.addRenderableWidget(kiButton);
+		this.addRenderableWidget(formsButton);
+		this.addRenderableWidget(stacksButton);
+        this.addRenderableWidget(evasionButton);
+	}
+
+	private List<String> getVisibleSkillNames() {
+		if (statsData == null) return new ArrayList<>();
+
+		Skills skills = statsData.getSkills();
+		List<String> skillNames = new ArrayList<>();
+		var skillsConfig = ConfigManager.getSkillsConfig();
+		String race = statsData.getCharacter().getRaceName();
+
+		switch (currentCategory) {
+			case SKILLS:
+				skills.getAllSkills().forEach((name, skill) -> {
+					if (!skillsConfig.getKiSkills().contains(name)
+							&& !skillsConfig.getStrikeSkills().contains(name)
+                            && !skillsConfig.getEvasionSkills().contains(name)
+							&& !skillsConfig.getStackSkills().contains(name)
+							&& !skillsConfig.getFormSkills().contains(name)
+							&& skillsConfig.isSkillAllowedForRace(name, race, statsData.getStatus().isAndroidUpgraded())) {
+						skillNames.add(name);
+					}
+				});
+				break;
+			case KI:
+				skillNames.add(NEW_SKILL_ENTRY);
+				statsData.getTechniques().getUnlockedTechniques().forEach((id, technique) -> {
+					if (technique instanceof KiAttackData && skillsConfig.isSkillAllowedForRace(id, race, statsData.getStatus().isAndroidUpgraded())) skillNames.add(id);
+				});
+				break;
+			case FORMS:
+				skills.getAllSkills().forEach((name, skill) -> {
+					if ((skillsConfig.getFormSkills().contains(name) || skillsConfig.getStackSkills().contains(name))
+							&& skillsConfig.isSkillAllowedForRace(name, race, statsData.getStatus().isAndroidUpgraded())) {
+						skillNames.add(name);
+					}
+				});
+				break;
+			case STRIKE:
+				statsData.getTechniques().getUnlockedTechniques().forEach((id, technique) -> {
+					if (technique instanceof StrikeAttackData && skillsConfig.isSkillAllowedForRace(id, race, statsData.getStatus().isAndroidUpgraded())) skillNames.add(id);
+				});
+				break;
+			case EVASION:
+				statsData.getTechniques().getUnlockedTechniques().forEach((id, technique) -> {
+					if (technique instanceof EvasionAttackData && skillsConfig.isSkillAllowedForRace(id, race, statsData.getStatus().isAndroidUpgraded())) skillNames.add(id);
+				});
+				break;
+		}
+
+		skillNames.sort((a, b) -> getDisplayNameForEntry(a).compareToIgnoreCase(getDisplayNameForEntry(b)));
+		if (skillNames.remove(NEW_SKILL_ENTRY)) skillNames.add(0, NEW_SKILL_ENTRY);
+		if (currentCategory == SkillCategory.SKILLS) {
+			int classPassiveIndex = 0;
+			String raceLower = race.toLowerCase();
+			if (!raceLower.isEmpty() && !ConfigManager.getRaceCharacter(raceLower).getRacialSkill().isEmpty()) {
+				skillNames.add(0, "racial_" + ConfigManager.getRaceCharacter(raceLower).getRacialSkill());
+				classPassiveIndex = 1;
+			}
+			skillNames.add(classPassiveIndex, CLASS_PASSIVE_ENTRY);
+		}
+		return skillNames;
+	}
+
+	private void refreshButtons() {
+		this.clearWidgets();
+		if (upgradeButton != null) this.removeWidget(upgradeButton);
+		if (btnDmg != null) this.removeWidget(btnDmg);
+		if (btnSize != null) this.removeWidget(btnSize);
+		if (btnSpeed != null) this.removeWidget(btnSpeed);
+		if (btnPen != null) this.removeWidget(btnPen);
+		if (btnCast != null) this.removeWidget(btnCast);
+		if (btnCd != null) this.removeWidget(btnCd);
+
+		this.isBinding = false;
+		this.techniqueImportBox = null;
+		this.upgradeButton = null;
+		this.btnDmg = null;
+		this.btnSize = null;
+		this.btnSpeed = null;
+		this.btnPen = null;
+		this.btnCast = null;
+		this.btnCd = null;
+
+		initDynamicButtons();
+		initNavigationButtons();
+
+		if (currentCategory == SkillCategory.FORMS) return;
+
+		initUpgradeButton();
+		initCreateSkillButton();
+		initBindButtons();
+		initTechniqueUpgradeButtons();
+	}
+
+	private void initTechniqueUpgradeButtons() {
+		if (selectedSkill == null || statsData == null || (currentCategory != SkillCategory.KI && currentCategory != SkillCategory.STRIKE && currentCategory != SkillCategory.EVASION)) return;
+		if (NEW_SKILL_ENTRY.equals(selectedSkill)) return;
+
+		TechniqueData tech = statsData.getTechniques().getUnlockedTechniques().get(selectedSkill);
+		if (tech == null) return;
+
+		int rightPanelX = getUiWidth() - 158;
+		int centerY = getUiHeight() / 2;
+		int rightPanelY = centerY - 105;
+
+		int btnX = rightPanelX + 115;
+		int yOffset = rightPanelY + 80;
+
+		if (tech instanceof KiAttackData) {
+			if (shouldShowTechniqueUpgradeButton(tech, "damage")) {
+				btnDmg = createUpgradeBtn(btnX, yOffset, "damage", true);
+				this.addRenderableWidget(btnDmg);
+			}
+			yOffset += 12;
+
+			if (shouldShowTechniqueUpgradeButton(tech, "size")) {
+				btnSize = createUpgradeBtn(btnX, yOffset, "size", true);
+				this.addRenderableWidget(btnSize);
+			}
+			yOffset += 12;
+
+			if (shouldShowTechniqueUpgradeButton(tech, "speed")) {
+				btnSpeed = createUpgradeBtn(btnX, yOffset, "speed", true);
+				this.addRenderableWidget(btnSpeed);
+			}
+			yOffset += 12;
+
+			if (shouldShowTechniqueUpgradeButton(tech, "armor_pen")) {
+				btnPen = createUpgradeBtn(btnX, yOffset, "armor_pen", true);
+				this.addRenderableWidget(btnPen);
+			}
+			yOffset += 12;
+        } else if (tech instanceof EvasionAttackData) {
+            if (shouldShowTechniqueUpgradeButton(tech, "duration")) {
+                btnDmg = createUpgradeBtn(btnX, yOffset, "duration", true);
+                this.addRenderableWidget(btnDmg);
+            }
+            yOffset += 12;
+        } else {
+			if (shouldShowTechniqueUpgradeButton(tech, "damage")) {
+				btnDmg = createUpgradeBtn(btnX, yOffset, "damage", true);
+				this.addRenderableWidget(btnDmg);
+			}
+			yOffset += 12;
+		}
+
+		if (shouldShowTechniqueUpgradeButton(tech, "cooldown")) {
+			btnCd = createUpgradeBtn(btnX, yOffset, "cooldown", true);
+			this.addRenderableWidget(btnCd);
+		}
+	}
+
+	private CustomTextureButton createUpgradeBtn(int x, int y, String statName, boolean active) {
+		var btn = new CustomTextureButton.Builder()
+				.position(x, y - 1)
+				.size(14, 11)
+				.texture(BUTTONS_TEXTURE)
+				.textureCoords(0, 0, 0, 10)
+				.textureSize(10, 10)
+				.onPress(button -> {
+					NetworkHandler.INSTANCE.sendToServer(new UpgradeTechniqueC2S(selectedSkill, statName));
+				})
+				.build();
+		btn.active = active;
+		return btn;
+	}
+
+	private boolean shouldShowTechniqueUpgradeButton(TechniqueData tech, String statName) {
+		if (!isTechniqueRaceAllowed(selectedSkill) || !hasEnoughTechniqueXpForUpgrade(tech, statName)) return false;
+        if (tech instanceof EvasionAttackData ev) return ev.canUpgradeStat(statName);
+		if (tech instanceof KiAttackData kiAttackData) return kiAttackData.canUpgradeStat(statName);
+		return "damage".equals(statName) || "cooldown".equals(statName);
+	}
+
+	private boolean hasEnoughTechniqueXpForUpgrade(TechniqueData tech, String statName) {
+		return tech.getExperience() >= getTechniqueUpgradeXpCost(tech, statName);
+	}
+
+	private int getTechniqueUpgradeXpCost(TechniqueData tech, String statName) {
+		if (tech instanceof KiAttackData kiAttackData) return kiAttackData.getUpgradeXpCost(statName);
+		if (tech instanceof StrikeAttackData strikeAttackData) return strikeAttackData.getUpgradeXpCost(statName);
+        if (tech instanceof EvasionAttackData ev) return ev.getUpgradeXpCost(statName);
+		return 100;
+	}
+
+	private void initBindButtons() {
+		if (selectedSkill == null || statsData == null || (currentCategory != SkillCategory.KI && currentCategory != SkillCategory.STRIKE && currentCategory != SkillCategory.EVASION)) return;
+		if (NEW_SKILL_ENTRY.equals(selectedSkill)) return;
+
+		int rightPanelX = getUiWidth() - 158;
+		int centerY = getUiHeight() / 2;
+		int rightPanelY = centerY - 105;
+		TechniqueData tech = statsData.getTechniques().getUnlockedTechniques().get(selectedSkill);
+		boolean isKi = tech instanceof KiAttackData;
+		boolean canShare = isKi && !PredefinedTechniques.isPredefinedTechniqueId(selectedSkill);
+
+		if (!isBinding) {
+			int yPos = rightPanelY + 185;
+
+			if (canShare) {
+				var importButton = new CustomTextureButton.Builder()
+						.position(rightPanelX + 11, yPos)
+						.size(20, 20)
+						.texture(BUTTONS_TEXTURE)
+						.textureCoords(162, 0, 162, 20)
+						.textureSize(20, 20)
+						.message(Component.empty())
+						.onPress(btn -> {
+							if (!isImportingTechnique) {
+								isImportingTechnique = true;
+								refreshButtons();
+							} else {
+								attemptTechniqueImport();
+							}
+						})
+						.build();
+				this.addRenderableWidget(importButton);
+			}
+
+			var bindButton = new TexturedTextButton.Builder()
+					.position(rightPanelX + 35, yPos)
+					.size(74, 20)
+					.texture(BUTTONS_TEXTURE)
+					.textureCoords(0, 28, 0, 48)
+					.textureSize(74, 20)
+					.message(tr("gui.dragonminez.skills.bind_to_slot"))
+					.onPress(btn -> {
+						isBinding = true;
+						this.clearWidgets();
+						initDynamicButtons();
+						initNavigationButtons();
+						initUpgradeButton();
+						initBindButtons();
+					})
+					.build();
+			this.addRenderableWidget(bindButton);
+
+			if (canShare) {
+				var exportButton = new CustomTextureButton.Builder()
+						.position(rightPanelX + 114, yPos)
+						.size(20, 20)
+						.texture(BUTTONS_TEXTURE)
+						.textureCoords(182, 0, 182, 20)
+						.textureSize(20, 20)
+						.message(Component.empty())
+						.onPress(btn -> {
+							if (tech instanceof KiAttackData kiAttackData) {
+								String code = kiAttackData.generateExportCode();
+								if (code == null || code.isEmpty()) {
+									setActionStatus(tr("gui.dragonminez.skills.status.invalid_code"), 0xFF5555);
+								} else {
+									Minecraft.getInstance().keyboardHandler.setClipboard(code);
+									setActionStatus(tr("gui.dragonminez.skills.status.copied"), 0x55FF55);
+								}
+							}
+						})
+						.build();
+				this.addRenderableWidget(exportButton);
+			}
+
+			if (canShare && isImportingTechnique) {
+				techniqueImportBox = new EditBox(this.font, rightPanelX + 7, yPos + 22, 123, 12, Component.empty());
+				techniqueImportBox.setMaxLength(65536);
+				this.addRenderableWidget(techniqueImportBox);
+			}
+
+			addRenderableWidget(new CustomTextureButton.Builder()
+					.position(rightPanelX + 119, yPos - 14)
+					.size(14, 11)
+					.texture(STAT_BUTTONS)
+					.textureCoords(10, 0, 10, 10)
+					.textureSize(10, 10)
+					.onPress(btn -> {
+						if (selectedSkill == null || NEW_SKILL_ENTRY.equals(selectedSkill)) return; NetworkHandler.sendToServer(new DeleteTechniqueC2S(selectedSkill)); selectedSkill = null; isImportingTechnique = false; techniqueImportBox = null; refreshButtons();
+						selectedSkill = null;
+					})
+					.build());
+		} else {
+			for (int i = 0; i < TECHNIQUE_BIND_SLOT_COUNT; i++) {
+				final int slotIndex = i;
+				int slotX = i < 4 ? i * 12 : (i - 4) * 12;
+				int slotY = i < 4 ? rightPanelY + 175 : rightPanelY + 186;
+
+				var slotBtn = new TexturedTextButton.Builder()
+						.position(rightPanelX + 50 + slotX, slotY)
+						.size(10, 10)
+						.texture(BUTTONS_TEXTURE)
+						.textureCoords(152, 0, 152, 10)
+						.textureSize(10, 10)
+						.message(Component.literal(String.valueOf(i + 1)))
+						.onPress(btn -> {
+							NetworkHandler.INSTANCE.sendToServer(new EquipTechniqueC2S(slotIndex, selectedSkill));
+							isBinding = false;
+							isImportingTechnique = false;
+							refreshButtons();
+						})
+						.build();
+				this.addRenderableWidget(slotBtn);
+			}
+		}
+	}
+
+	private void initCreateSkillButton() {
+		if (statsData == null || currentCategory != SkillCategory.KI || !NEW_SKILL_ENTRY.equals(selectedSkill)) return;
+
+		int rightPanelX = getUiWidth() - 158;
+		int centerY = getUiHeight() / 2;
+		int rightPanelY = centerY - 105;
+
+		var createButton = new TexturedTextButton.Builder()
+				.position(rightPanelX + 35, rightPanelY + 185)
+				.size(74, 20)
+				.texture(BUTTONS_TEXTURE)
+				.textureCoords(0, 28, 0, 48)
+				.textureSize(74, 20)
+				.message(tr("gui.dragonminez.skills.create_skill"))
+				.onPress(btn -> openTechniqueCreator())
+				.build();
+		this.addRenderableWidget(createButton);
+	}
+
+	private void initUpgradeButton() {
+		if (selectedSkill == null || statsData == null) return;
+
+		Skill skill = statsData.getSkills().getSkill(selectedSkill);
+		if (skill == null) return;
+
+		int rightPanelX = getUiWidth() - 158;
+		int centerY = getUiHeight() / 2;
+		int rightPanelY = centerY - 105;
+
+		int cost = getUpgradeCost(selectedSkill, skill.getLevel());
+		float currentTPS = statsData.getResources().getTrainingPoints();
+		boolean canUpgrade = !skill.isMaxLevel() && currentTPS >= cost;
+		if (cost == -1 || cost == Integer.MAX_VALUE) return;
+
+		if (!skill.isMaxLevel()) {
+			upgradeButton = new TexturedTextButton.Builder()
+					.position(rightPanelX + 35, rightPanelY + 196)
+					.size(74, 20)
+					.texture(BUTTONS_TEXTURE)
+					.textureCoords(0, 28, 0, 48)
+					.textureSize(74, 20)
+					.message(tr("gui.dragonminez.skills.upgrade"))
+					.onPress(btn -> {
+						if (canUpgrade) {
+							NetworkHandler.INSTANCE.sendToServer(new UpdateSkillC2S(UpdateSkillC2S.SkillAction.UPGRADE, selectedSkill, cost));
+							updateStatsData();
+						}
+					})
+					.build();
+
+			upgradeButton.active = canUpgrade;
+			this.addRenderableWidget(upgradeButton);
+		}
+	}
+
+	private int getUpgradeCost(String skillName, int currentLevel) {
+		return getUpgradeCostForTargetLevel(skillName, currentLevel);
+	}
+
+	private int getUpgradeCostForTargetLevel(String skillName, int targetLevel) {
+		if (skillName == null || skillName.isEmpty()) return Integer.MAX_VALUE;
+
+		skillName = skillName.toLowerCase(Locale.ROOT);
+
+		boolean isForm = ConfigManager.getSkillsConfig().getFormSkills().contains(skillName);
+		boolean isStack = ConfigManager.getSkillsConfig().getStackSkills().contains(skillName);
+
+		if (isForm) {
+			var raceConfig = ConfigManager.getRaceCharacter(statsData.getCharacter().getRaceName());
+			if (raceConfig == null) return Integer.MAX_VALUE;
+			Integer[] costs = raceConfig.getFormSkillTpCosts(skillName);
+			if (costs != null && targetLevel >= 0 && targetLevel < costs.length) {
+				Integer cost = costs[targetLevel];
+				return cost != null ? cost : Integer.MAX_VALUE;
+			}
+			return Integer.MAX_VALUE;
+		}
+
+		if (isStack) {
+			var skillData = ConfigManager.getSkillsConfig().getSkillCosts(skillName);
+			if (skillData != null && skillData.getCosts() != null) {
+				List<Integer> costs = skillData.getCosts();
+				if (targetLevel >= 0 && targetLevel < costs.size()) {
+					Integer cost = costs.get(targetLevel);
+					return cost != null ? cost : Integer.MAX_VALUE;
+				}
+			}
+			return Integer.MAX_VALUE;
+		}
+
+		var skillData = ConfigManager.getSkillsConfig().getSkills().get(skillName);
+		if (skillData != null && skillData.getCosts() != null) {
+			List<Integer> costs = skillData.getCosts();
+			if (targetLevel >= 0 && targetLevel < costs.size()) {
+				Integer cost = costs.get(targetLevel);
+				return cost != null ? cost : Integer.MAX_VALUE;
+			}
+		}
+		return Integer.MAX_VALUE;
+	}
+
+	private boolean isMasterOnlyFirstFormLevel(String formType, int targetLevel) {
+		if (targetLevel != 0 || formType == null || statsData == null) return false;
+		String lower = formType.toLowerCase(Locale.ROOT);
+		if (ConfigManager.getSkillsConfig().getStackSkills().contains(lower)) return false;
+		var raceConfig = ConfigManager.getRaceCharacter(statsData.getCharacter().getRaceName());
+		return raceConfig != null && raceConfig.isFormSkillBuyFromMaster(lower);
+	}
+
+	private List<Component> getQuestsGrantingForm(String formType, int requiredLevel) {
+		List<Component> refs = new ArrayList<>();
+		if (formType == null || formType.isEmpty()) return refs;
+
+		for (Saga saga : QuestRegistry.getClientSagas().values()) {
+			for (Quest quest : saga.getQuests()) {
+				if (!questGrantsFormAtLevel(quest, formType, requiredLevel)) continue;
+				Component ref = tr("gui.dragonminez.skills.quest_ref", tr(saga.getName()), quest.getId());
+				if (refs.stream().noneMatch(r -> r.getString().equals(ref.getString()))) refs.add(ref);
+			}
+		}
+
+		for (Quest quest : QuestRegistry.getClientQuests().values()) {
+			if (quest.getType() == Quest.QuestType.SAGA) continue;
+			if (quest.getTitle() == null || quest.getTitle().isEmpty()) continue;
+			if (!questGrantsFormAtLevel(quest, formType, requiredLevel)) continue;
+			Component ref = tr(quest.getTitle());
+			if (refs.stream().noneMatch(r -> r.getString().equals(ref.getString()))) refs.add(ref);
+		}
+		return refs;
+	}
+
+	private boolean questGrantsFormAtLevel(Quest quest, String formType, int requiredLevel) {
+		for (QuestReward reward : quest.getRewards()) {
+			if (reward instanceof SkillReward skillReward
+					&& formType.equalsIgnoreCase(skillReward.getSkill())
+					&& skillReward.getLevel() == requiredLevel) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+
+	/**
+	 * 26.2: Screen#extractRenderStateWithTooltipAndSubtitles is final and already calls
+	 * extractBackground once per frame, so calling it again from extractRenderState made
+	 * the blur request fire twice and threw
+	 *   IllegalStateException: Can only blur once per frame
+	 * The guard DMZ wanted (skip the backdrop during the open/close transition) belongs
+	 * here instead, where vanilla still calls it exactly once.
+	 */
+	@Override
+	public void extractBackground(net.minecraft.client.gui.GuiGraphicsExtractor graphics,
+			int mouseX, int mouseY, float partialTick) {
+		if (isNotAnimating()) {
+			super.extractBackground(graphics, mouseX, mouseY, partialTick);
+		}
+	}
+	@Override
+	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+
+
+		int uiMouseX = (int) Math.round(toUiX(mouseX));
+		int uiMouseY = (int) Math.round(toUiY(mouseY));
+
+		beginUiScale(graphics);
+		applyZoom(graphics, partialTick);
+
+		float step = Math.max(0.01f, 0.07f + (partialTick * 0.01f));
+		formsTransitionProgress = approach01(formsTransitionProgress, currentCategory == SkillCategory.FORMS ? 1.0f : 0.0f, step);
+
+		int baseLeftOffset = getLeftPanelSwitchOffset(partialTick);
+
+		boolean nearLeftEdge = uiMouseX <= 36;
+		boolean overLeftPanel = uiMouseX >= currentLeftX && uiMouseX < currentLeftX + 141 + 42 && uiMouseY >= getUiHeight() / 2 - 105 && uiMouseY < getUiHeight() / 2 + 108;
+		float leftTarget = (nearLeftEdge || overLeftPanel) ? 1.0f : 0.0f;
+		leftPanelHoverProgress = approach01(leftPanelHoverProgress, leftTarget, step);
+
+		int hiddenTravel = 141 - 24;
+		int extraLeftOffset = (int) (-hiddenTravel * (1.0f - easeInOutCubic(leftPanelHoverProgress)) * easeInOutCubic(formsTransitionProgress));
+
+		currentLeftX = 12 + baseLeftOffset + extraLeftOffset;
+
+		int rightOffset = getRightPanelSwitchOffset(partialTick);
+		int extraRightOffset = (int) (200 * easeInOutCubic(formsTransitionProgress));
+		currentRightX = getUiWidth() - 158 + rightOffset + extraRightOffset;
+
+		updateButtonAnimations(uiMouseX, uiMouseY, partialTick);
+
+		if (formsTransitionProgress > 0.0f) {
+			renderFormsTree(graphics, uiMouseX, uiMouseY);
+		}
+
+		float currentModelX = Mth.lerp(easeInOutCubic(formsTransitionProgress), getUiWidth() / 2 + 5, getUiWidth() - 80);
+		renderPlayerModel(graphics, (int) currentModelX, getUiHeight() / 2 + 70, 75, uiMouseX, uiMouseY, formsTransitionProgress > 0.5f);
+
+		renderLeftPanel(graphics, currentLeftX, getUiHeight() / 2 - 105, uiMouseX, uiMouseY);
+
+		if (formsTransitionProgress < 1.0f) renderRightPanel(graphics, currentRightX, getUiHeight() / 2 - 105, uiMouseX, uiMouseY);
+
+		super.extractRenderState(graphics, uiMouseX, uiMouseY, partialTick);
+		endUiScale(graphics);
+	}
+
+	private void renderFormsTree(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
+		int alpha = (int) (formsTransitionProgress * 255);
+		int gridColor = (alpha << 24) | 0x222244;
+
+		int spacing = 20;
+		int offsetX = ((int) formsPanX) % spacing;
+		int offsetY = ((int) formsPanY) % spacing;
+
+		for (int x = offsetX - spacing; x < getUiWidth(); x += spacing) graphics.fill(x, 0, x + 1, getUiHeight(), gridColor);
+		for (int y = offsetY - spacing; y < getUiHeight(); y += spacing) graphics.fill(0, y, getUiWidth(), y + 1, gridColor);
+
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(getUiWidth() / 2f + formsPanX, getUiHeight() / 2f + formsPanY);
+
+		for (int i = 0; i < formNodes.size() - 1; i++) {
+			FormNode current = formNodes.get(i);
+			FormNode next = formNodes.get(i + 1);
+
+			if (current.group.equals(next.group)) {
+				int cx = (int) ((current.x + 16) * formsZoom);
+				int cy = (int) ((current.y + 16) * formsZoom);
+				int nx = (int) ((next.x + 16) * formsZoom);
+				int ny = (int) ((next.y + 16) * formsZoom);
+
+				drawThickLine(graphics, cx, cy, nx, ny, Math.max(1, (int) (3 * formsZoom)), (alpha << 24) | 0x555555);
+			}
+		}
+
+		FormNode hovered = null;
+
+		for (FormNode node : formNodes) {
+			int nx = (int) (node.x * formsZoom);
+			int ny = (int) (node.y * formsZoom);
+			int size = (int) (32 * formsZoom);
+
+			int screenNx = (int) (getUiWidth() / 2f + formsPanX + nx);
+			int screenNy = (int) (getUiHeight() / 2f + formsPanY + ny);
+
+			boolean isHovered = mouseX >= screenNx && mouseX <= screenNx + size && mouseY >= screenNy && mouseY <= screenNy + size;
+			if (isHovered) hovered = node;
+
+			Skill skill = statsData.getSkills().getSkill(node.formType);
+			int currentLevel = skill != null ? skill.getLevel() : 0;
+
+			int requiredLevel = node.data.getUnlockOnSkillLevel();
+			boolean unlocked = skill != null && skill.isUnlockedAt(requiredLevel);
+			boolean canPurchaseLevel = requiredLevel == currentLevel + 1;
+
+			boolean selected = node.group.equalsIgnoreCase(selectedFormGroup) && node.data.getName().equalsIgnoreCase(selectedFormName);
+
+			int borderColor = selected ? ((alpha << 24) | 0xFFFF00) : (unlocked ? ((alpha << 24) | 0x00AA00) : ((alpha << 24) | 0x333333));
+			int bgColor = (alpha << 24) | 0x111111;
+
+			graphics.fill(nx - 2, ny - 2, nx + size + 2, ny + size + 2, borderColor);
+			graphics.fill(nx, ny, nx + size, ny + size, bgColor);
+
+			Identifier icon = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/icons/" + node.formType.toLowerCase(Locale.ROOT) + ".png");
+
+			if (unlocked) {
+				float[] rgb = node.data.getRgbAuraColor();
+				if (rgb != null && rgb.length >= 3) { /* 26.2: tint 走 blit 的 color 参数 */ }
+				else { }
+			} else { }
+
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, icon, nx + (int) (4 * formsZoom), ny + (int) (4 * formsZoom), 0, 0, (int) (24 * formsZoom), (int) (24 * formsZoom), (int) (24 * formsZoom), (int) (24 * formsZoom));
+
+			int targetLevel = Math.max(0, requiredLevel - 1);
+			int cost = getUpgradeCostForTargetLevel(node.formType, targetLevel);
+			boolean isStack = ConfigManager.getSkillsConfig().getStackSkills().contains(node.formType.toLowerCase(Locale.ROOT));
+			boolean isFirstStackLevel = isStack && targetLevel == 0;
+			boolean isMasterOnly = isMasterOnlyFirstFormLevel(node.formType, targetLevel);
+
+			if (!unlocked && canPurchaseLevel && !isFirstStackLevel && !isMasterOnly && cost != -1 && cost != Integer.MAX_VALUE && statsData.getResources().getTrainingPoints() >= cost) {
+				int exX = nx + size - (int) (6 * formsZoom);
+				int exY = ny - (int) (10 * formsZoom);
+
+				/* 26.2: tint 走 blit 的 color 参数 */
+				graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, EXCLAMATION_MARK, exX, exY, 0f, 0f, (int) (6 * formsZoom), (int) (15 * formsZoom), 97, 250, 0xFFFFFFFF);
+			}
+		}
+
+		graphics.pose().popMatrix();
+
+		if (hovered != null && formsTransitionProgress > 0.8f) {
+			List<Component> lines = new ArrayList<>();
+			String race = statsData.getCharacter().getRaceName().toLowerCase(Locale.ROOT);
+			boolean isStack = ConfigManager.getSkillsConfig().getStackSkills().contains(hovered.formType.toLowerCase(Locale.ROOT));
+
+			if (isStack) {
+				lines.add(Component.translatable("race.dragonminez.stack.group." + hovered.group).withStyle(ChatFormatting.BLUE, ChatFormatting.BOLD));
+				lines.add(Component.translatable("race.dragonminez.stack.form." + hovered.group + "." + hovered.data.getName()).withStyle(ChatFormatting.AQUA));
+			} else {
+				lines.add(Component.translatable("race.dragonminez." + race + ".group." + hovered.group).withStyle(ChatFormatting.GOLD, ChatFormatting.BOLD));
+				lines.add(Component.translatable("race.dragonminez." + race + ".form." + hovered.group + "." + hovered.data.getName()).withStyle(ChatFormatting.YELLOW));
+			}
+
+			Skill skill = statsData.getSkills().getSkill(hovered.formType);
+
+			int currentLevel = skill != null ? skill.getLevel() : 0;
+			int requiredLevel = hovered.data.getUnlockOnSkillLevel();
+
+			boolean unlocked = skill != null && skill.isUnlockedAt(requiredLevel);
+			boolean canPurchaseLevel = requiredLevel == currentLevel + 1;
+
+			lines.add(Component.translatable("skill.dragonminez." + hovered.formType).withStyle(ChatFormatting.GRAY).append(": " + requiredLevel).withStyle(ChatFormatting.GRAY));
+
+			int targetLevel = Math.max(0, requiredLevel - 1);
+			int cost = getUpgradeCostForTargetLevel(hovered.formType, targetLevel);
+			boolean isFirstStackLevel = isStack && targetLevel == 0;
+			boolean isMasterOnly = isMasterOnlyFirstFormLevel(hovered.formType, targetLevel);
+
+			if (unlocked) lines.add(Component.translatable("gui.dragonminez.skills.purchased").withStyle(ChatFormatting.GREEN));
+			else if (cost == -1 || cost == Integer.MAX_VALUE) {
+				List<Component> questTitles = getQuestsGrantingForm(hovered.formType, requiredLevel);
+				if (questTitles.isEmpty()) lines.add(Component.translatable("gui.dragonminez.skills.priceless").withStyle(ChatFormatting.DARK_RED));
+				else {
+					lines.add(Component.translatable("gui.dragonminez.skills.unlocked_by_quest").withStyle(ChatFormatting.LIGHT_PURPLE));
+					for (Component title : questTitles) lines.add(title.copy().withStyle(ChatFormatting.GRAY));
+				}
+			}
+			else {
+				lines.add(Component.translatable("gui.dragonminez.quests.rewards.tps", cost).withStyle(ChatFormatting.AQUA));
+				if (isMasterOnly) lines.add(Component.translatable("gui.dragonminez.skills.unlocked_by_master").withStyle(ChatFormatting.LIGHT_PURPLE, ChatFormatting.ITALIC));
+				else if (canPurchaseLevel && !isFirstStackLevel && statsData.getResources().getTrainingPoints() >= cost) lines.add(Component.translatable("gui.dragonminez.skills.doubleclick_buy").withStyle(ChatFormatting.YELLOW, ChatFormatting.ITALIC));
+			}
+
+			TextUtil.renderAdvancedTooltip(graphics, this.font, mouseX, mouseY, getUiWidth(), getUiHeight(), null, lines, null, 0xFFFFFF);
+		}
+	}
+
+	private void drawThickLine(GuiGraphicsExtractor graphics, int x1, int y1, int x2, int y2, int thickness, int color) {
+		int half = Math.max(0, thickness / 2);
+
+		if (y1 == y2) {
+			int left = Math.min(x1, x2);
+			int right = Math.max(x1, x2);
+			graphics.fill(left - half, y1 - half, right + half + 1, y1 + half + 1, color);
+			return;
+		}
+		if (x1 == x2) {
+			int top = Math.min(y1, y2);
+			int bottom = Math.max(y1, y2);
+			graphics.fill(x1 - half, top - half, x1 + half + 1, bottom + half + 1, color);
+			return;
+		}
+
+		int dx = Math.abs(x2 - x1);
+		int dy = Math.abs(y2 - y1);
+		int steps = Math.max(1, Math.max(dx, dy));
+
+		for (int i = 0; i <= steps; i++) {
+			float t = i / (float) steps;
+			int x = Math.round(x1 + (x2 - x1) * t);
+			int y = Math.round(y1 + (y2 - y1) * t);
+			graphics.fill(x - half, y - half, x + half + 1, y + half + 1, color);
+		}
+	}
+
+	private FormNode getHoveredFormNode(double uiMouseX, double uiMouseY) {
+		for (FormNode node : formNodes) {
+			int nx = (int) (node.x * formsZoom);
+			int ny = (int) (node.y * formsZoom);
+			int size = (int) (32 * formsZoom);
+			int screenNx = (int) (getUiWidth() / 2f + formsPanX + nx);
+			int screenNy = (int) (getUiHeight() / 2f + formsPanY + ny);
+
+			if (uiMouseX >= screenNx && uiMouseX <= screenNx + size && uiMouseY >= screenNy && uiMouseY <= screenNy + size) return node;
+		}
+		return null;
+	}
+
+	private void updateButtonAnimations(int mouseX, int mouseY, float partialTick) {
+		int centerY = getUiHeight() / 2;
+		int leftPanelY = centerY - 105;
+
+		int hiddenX = currentLeftX + 122;
+		int visibleX = currentLeftX + 141;
+		int buttonWidth = 26;
+		int panelWidth = 141;
+		int panelHeight = 213;
+
+		int hotZoneX = hiddenX;
+		int hotZoneY = leftPanelY + 6;
+		int hotZoneWidth = (visibleX - hiddenX) + buttonWidth;
+		int hotZoneHeight = 165;
+
+		boolean overPanel = mouseX >= currentLeftX && mouseX < currentLeftX + panelWidth &&
+				mouseY >= leftPanelY && mouseY < leftPanelY + panelHeight;
+		boolean overHotZone = mouseX >= hotZoneX && mouseX < hotZoneX + hotZoneWidth &&
+				mouseY >= hotZoneY && mouseY < hotZoneY + hotZoneHeight;
+		boolean shouldReveal = overPanel || overHotZone;
+
+		float step = Math.max(0.01f, 0.07f + (partialTick * 0.01f));
+		buttonRevealProgress = approach01(buttonRevealProgress, shouldReveal ? 1.0f : 0.0f, step);
+		float animProgress = easeInOutCubic(buttonRevealProgress);
+
+		int newX = hiddenX + (int) ((visibleX - hiddenX) * animProgress);
+		skillsButton.setX(newX);
+		kiButton.setX(newX);
+		formsButton.setX(newX);
+		stacksButton.setX(newX);
+        evasionButton.setX(newX);
+
+		int scissorXScreen = toScissorCoord(currentLeftX + 141);
+		int scissorYScreen = toScissorCoord(0);
+		int scissorRight = toScissorCoord(getUiWidth());
+		int scissorBottom = toScissorCoord(getUiHeight());
+		skillsButton.setScissorRect(scissorXScreen, scissorYScreen, scissorRight, scissorBottom);
+		kiButton.setScissorRect(scissorXScreen, scissorYScreen, scissorRight, scissorBottom);
+		formsButton.setScissorRect(scissorXScreen, scissorYScreen, scissorRight, scissorBottom);
+		stacksButton.setScissorRect(scissorXScreen, scissorYScreen, scissorRight, scissorBottom);
+        evasionButton.setScissorRect(scissorXScreen, scissorYScreen, scissorRight, scissorBottom);
+	}
+
+	private float approach01(float current, float target, float step) {
+		if (current < target) return Math.min(target, current + step);
+		if (current > target) return Math.max(target, current - step);
+		return current;
+	}
+
+	private float easeInOutCubic(float t) {
+		if (t <= 0.0f) return 0.0f;
+		if (t >= 1.0f) return 1.0f;
+		return t < 0.5f ? 4.0f * t * t * t : 1.0f - (float) Math.pow(-2.0f * t + 2.0f, 3.0f) / 2.0f;
+	}
+
+	private void renderLeftPanel(GuiGraphicsExtractor graphics, int panelX, int panelY, int mouseX, int mouseY) {
+		graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, panelX, panelY, 0, 0, 141, 213, 256, 256);
+		graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, panelX + 17, panelY + 10, 142, 22, 107, 21, 256, 256);
+
+		renderSkillsList(graphics, panelX, panelY, mouseX, mouseY);
+	}
+
+	private void renderSkillsList(GuiGraphicsExtractor graphics, int panelX, int panelY, int mouseX, int mouseY) {
+		List<String> skillNames = getVisibleSkillNames();
+
+		int startY = panelY + 30;
+		int viewHeight = MAX_VISIBLE_SKILLS * SKILL_ITEM_HEIGHT;
+		int totalHeight = skillNames.size() * SKILL_ITEM_HEIGHT;
+
+		maxScroll = Math.max(0, totalHeight - viewHeight);
+		targetScroll = Mth.clamp(targetScroll, 0, maxScroll);
+		float tickDelta = Minecraft.getInstance().getDeltaTracker().getRealtimeDeltaTicks();
+		currentScroll = Mth.lerp(tickDelta * 0.4f, currentScroll, targetScroll);
+
+		graphics.enableScissor(
+				toScissorCoord(panelX + 5),
+				toScissorCoord(startY),
+				toScissorCoord(panelX + 179),
+				toScissorCoord(startY + viewHeight)
+		);
+
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(0, -currentScroll);
+
+		for (int i = 0; i < skillNames.size(); i++) {
+			String skillName = skillNames.get(i);
+			int itemY = startY + (i * SKILL_ITEM_HEIGHT);
+
+			if (itemY + SKILL_ITEM_HEIGHT >= startY + currentScroll && itemY <= startY + viewHeight + currentScroll) {
+				boolean isSelected = skillName.equals(selectedSkill);
+				boolean isHovered = mouseX >= panelX + 10 && mouseX <= panelX + 100 &&
+						mouseY >= itemY - currentScroll && mouseY <= itemY + SKILL_ITEM_HEIGHT - currentScroll;
+
+				int color = isSelected ? 0xFFFFAA00 : (isHovered ? 0xFFAAAAAA : 0xFFFFFFFF);
+
+				Skill skill = statsData.getSkills().getSkill(skillName);
+				String displayName;
+				if (currentCategory == SkillCategory.KI || currentCategory == SkillCategory.STRIKE || currentCategory == SkillCategory.EVASION)
+					displayName = getDisplayNameForEntry(skillName);
+				else if (CLASS_PASSIVE_ENTRY.equals(skillName)) displayName = getClassPassiveTitle();
+				else displayName = tr("skill.dragonminez." + skillName).getString();
+
+				TextUtil.drawStringWithBorder(graphics, this.font, txt(displayName), panelX + 15, itemY + 5, color);
+
+				if (currentCategory == SkillCategory.KI || currentCategory == SkillCategory.STRIKE || currentCategory == SkillCategory.EVASION) {
+					TechniqueData technique = NEW_SKILL_ENTRY.equals(skillName) ? null : statsData.getTechniques().getUnlockedTechniques().get(skillName);
+					if (technique != null) {
+						String xpText = String.valueOf(technique.getExperience());
+						int xpX = panelX + 130 - TextUtil.width(this.font, xpText, DMZ_FONT);
+						TextUtil.drawStringWithBorder(graphics, this.font, txt(xpText), xpX, itemY + 5, color);
+					}
+				} else if (skill != null) {
+					String levelText = String.valueOf(skill.getLevel());
+					int levelX = panelX + 130 - TextUtil.width(this.font, levelText, DMZ_FONT);
+					TextUtil.drawStringWithBorder(graphics, this.font, txt(levelText),
+							levelX, itemY + 5, color);
+				}
+			}
+		}
+
+		graphics.pose().popMatrix();
+		graphics.disableScissor();
+
+		if (maxScroll > 0) {
+			int scrollBarX = panelX + 135;
+			graphics.fill(scrollBarX, startY, scrollBarX + 3, startY + viewHeight, 0xFF333333);
+
+			float scrollPercent = currentScroll / maxScroll;
+			float visiblePercent = (float) viewHeight / totalHeight;
+			int indicatorHeight = Math.max(20, (int) (viewHeight * visiblePercent));
+			int indicatorY = startY + (int) ((viewHeight - indicatorHeight) * scrollPercent);
+
+			graphics.fill(scrollBarX, indicatorY, scrollBarX + 3, indicatorY + indicatorHeight, 0xFFAAAAAA);
+		}
+
+		String title = "";
+		switch (currentCategory) {
+			case SKILLS -> title = "gui.dragonminez.skills.tab.skills";
+			case KI -> title = "gui.dragonminez.skills.tab.kiattacks";
+			case FORMS -> title = "gui.dragonminez.skills.tab.forms";
+			case STRIKE -> title = "gui.dragonminez.skills.tab.strikeattacks";
+            case EVASION -> title = "gui.dragonminez.skills.tab.evasionattacks";
+		}
+
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr(title)
+				.withStyle(style -> style.withBold(true)), panelX + 68, getUiHeight() / 2 - 88, 0xFFFBC51C);
+	}
+
+	private void renderRightPanel(GuiGraphicsExtractor graphics, int panelX, int panelY, int mouseX, int mouseY) {
+
+		if (currentCategory == SkillCategory.KI || currentCategory == SkillCategory.STRIKE || currentCategory == SkillCategory.EVASION) {
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, panelX, panelY, 0, 0, 141, 213, 256, 256);
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, panelX + 17, panelY + 10, 142, 22, 107, 21, 256, 256);
+		} else {
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_SMALL, panelX, panelY, 0, 0, 141, 94, 256, 256);
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, panelX + 17, panelY + 10, 142, 22, 107, 21, 256, 256);
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_SMALL, panelX, panelY + 96, 0, 0, 141, 94, 256, 256);
+			graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_SMALL, panelX, panelY + 190, 0, 154, 141, 32, 256, 256);
+		}
+
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.character_stats.info").withStyle(style -> style.withBold(true)), panelX + 70, panelY + 16, 0xFFFFD700);
+
+		if (selectedSkill != null && statsData != null) {
+			if (currentCategory == SkillCategory.KI && NEW_SKILL_ENTRY.equals(selectedSkill))
+				renderNewSkillPlaceholder(graphics, panelX, panelY);
+			else if (currentCategory == SkillCategory.KI || currentCategory == SkillCategory.STRIKE || currentCategory == SkillCategory.EVASION)
+				renderTechniqueDetails(graphics, panelX, panelY, mouseX, mouseY);
+			else renderSkillDetails(graphics, panelX, panelY);
+		}
+	}
+
+	private boolean isTechniqueRaceAllowed(String id) {
+        return statsData == null || ConfigManager.getSkillsConfig().isSkillAllowedForRace(id, statsData.getCharacter().getRaceName(), statsData.getStatus().isAndroidUpgraded());
+    }
+
+    private void renderNewSkillPlaceholder(GuiGraphicsExtractor graphics, int panelX, int panelY) {
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.skills.new_skill").withStyle(ChatFormatting.BOLD), panelX + 70, panelY + 48, 0xFFFFFFFF);
+	}
+
+	private void renderTechniqueDetails(GuiGraphicsExtractor graphics, int panelX, int panelY, int mouseX, int mouseY) {
+		TechniqueData tech = statsData.getTechniques().getUnlockedTechniques().get(selectedSkill);
+		if (tech == null) return;
+
+		int yOffset = panelY + 40;
+		int xpReq = 100;
+		int cooldownTicks = tech.getCooldown();
+
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr(tech.getName()).withStyle(ChatFormatting.BOLD), panelX + 70, yOffset, 0xFFFFFFFF);
+		yOffset += 12;
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.xp", tech.getExperience()), panelX + 70, yOffset, 0xFF55FF55);
+		yOffset += 16;
+
+		if (tech instanceof KiAttackData ki) {
+			xpReq = ki.getUpgradeXpCost("damage");
+			cooldownTicks = ki.getActualCooldown();
+			int scaledKiDamage = (int) (statsData.getKiDamage() * ki.getActualDamageMultiplier() * ki.getConfiguredDamageMultiplier() * ki.getOutputMultiplier());
+
+			TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.type").append(": ").append(tr("technique.type." + ki.getKiType().name().toLowerCase())), panelX + 15, yOffset, 0xFFDDDDDD);
+			yOffset += 12;
+
+			String utilKey = ki.getEffectiveUtility() == KiAttackData.Utility.HEAL ? "gui.dragonminez.technique.heal" : "gui.dragonminez.technique.damage";
+			TextUtil.drawStringWithBorder(graphics, this.font, tr(utilKey).append(": ").append(txt(String.valueOf(scaledKiDamage))), panelX + 15, yOffset, 0xFFFFFFFF);
+			yOffset += 12;
+
+			TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.size").append(": ").append(txt(String.format(Locale.US, "%.1f", ki.getSize()))), panelX + 15, yOffset, 0xFFFFFFFF);
+			yOffset += 12;
+			TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.speed").append(": ").append(txt(String.format(Locale.US, "%.1f", ki.getSpeed()))), panelX + 15, yOffset, 0xFFFFFFFF);
+			yOffset += 12;
+			TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.armor_pen").append(": ").append(txt(String.valueOf(ki.getArmorPenetration()))), panelX + 15, yOffset, 0xFFFFFFFF);
+			yOffset += 12;
+		} else if (tech instanceof StrikeAttackData st) {
+			cooldownTicks = st.getActualCooldown();
+			int scaledStrikeDamage = (int) (statsData.getStrikeDamage() * st.getDamageMultiplier());
+			TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.type").append(": ").append(tr("technique.type.strike")), panelX + 15, yOffset, 0xFFDDDDDD);
+			yOffset += 12;
+			TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.damage").append(": ").append(txt(String.valueOf(scaledStrikeDamage))), panelX + 15, yOffset, 0xFFFFFFFF);
+			yOffset += 12;
+        } else if (tech instanceof EvasionAttackData ev) {
+            xpReq = ev.getUpgradeXpCost("duration");
+            cooldownTicks = ev.getActualCooldown();
+            TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.type").append(": ").append(tr("technique.type.evasion")), panelX + 15, yOffset, 0xFFDDDDDD);
+            yOffset += 12;
+            TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.duration").append(": ").append(txt(String.format(Locale.US, "%.1fs", ev.getActualDurationTicks() / 20.0f))), panelX + 15, yOffset, 0xFFFFFFFF);
+            yOffset += 12;
+        }
+
+        TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.cooldown").append(": ").append(txt(String.format(Locale.US, "%.1fs", cooldownTicks / 20.0f))), panelX + 15, yOffset, 0xFFFFFFFF);
+		yOffset += 16;
+
+		TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.energy_cost").append(": ").append(txt(String.format(Locale.US, "%.1f", tech.getCalculatedCost(statsData)))), panelX + 15, yOffset, 0xFFFFAAAA);
+		yOffset += 16;
+
+		TextUtil.drawStringWithBorder(graphics, this.font, tr("gui.dragonminez.technique.req_xp", xpReq), panelX + 15, yOffset, 0xFFAAAAAA);
+		renderActionStatus(graphics, panelX, panelY);
+	}
+
+	private void attemptTechniqueImport() {
+		if (statsData == null || techniqueImportBox == null) return;
+		String code = techniqueImportBox.getValue() != null ? techniqueImportBox.getValue().trim() : "";
+		if (code.isEmpty()) {
+			setActionStatus(tr("gui.dragonminez.skills.status.invalid_code"), 0xFF5555);
+			return;
+		}
+		NetworkHandler.INSTANCE.sendToServer(new ImportTechniqueC2S(code));
+	}
+
+	private void setActionStatus(Component text, int color) {
+		actionStatusText = text;
+		actionStatusColor = color;
+		actionStatusTimer = 60;
+	}
+
+	private void renderActionStatus(GuiGraphicsExtractor graphics, int panelX, int panelY) {
+		if (actionStatusTimer <= 0) return;
+		int alpha = (int) Math.max(0, Math.min(255, (actionStatusTimer / 60.0f) * 255.0f));
+		if (alpha <= 0) return;
+		int colorWithAlpha = (alpha << 24) | (actionStatusColor & 0x00FFFFFF);
+		int yPos = panelY + 208;
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, actionStatusText, panelX + 70, yPos, colorWithAlpha);
+	}
+
+	private void consumePendingImportStatus() {
+		if (pendingImportStatusText == null) return;
+		setActionStatus(pendingImportStatusText, pendingImportStatusColor);
+		pendingImportStatusText = null;
+		if (pendingImportSuccess) {
+			pendingImportSuccess = false;
+			isImportingTechnique = false;
+			techniqueImportBox = null;
+			refreshButtons();
+		}
+	}
+
+	public static void handleTechniqueImportResult(com.dragonminez.common.network.S2C.TechniqueImportResultS2C.Status status, int value) {
+		switch (status) {
+			case INVALID -> {
+				pendingImportStatusText = Component.translatable("gui.dragonminez.skills.status.invalid_code");
+				pendingImportStatusColor = 0xFF5555;
+			}
+			case NOT_ENOUGH_TP -> {
+				pendingImportStatusText = Component.translatable("gui.dragonminez.skills.status.not_enough_tp", value);
+				pendingImportStatusColor = 0xFF5555;
+			}
+			case IMPORTED -> {
+				pendingImportStatusText = Component.translatable("gui.dragonminez.skills.status.imported_used_tp", value);
+				pendingImportStatusColor = 0x55FF55;
+				pendingImportSuccess = true;
+			}
+		}
+	}
+
+	private void renderSkillDetails(GuiGraphicsExtractor graphics, int panelX, int panelY) {
+		Skill skill = statsData.getSkills().getSkill(selectedSkill);
+		boolean isClassPassive = selectedSkill.equals(CLASS_PASSIVE_ENTRY);
+		if (skill == null && !selectedSkill.startsWith("racial_") && !isClassPassive) return;
+		GeneralServerConfig.RacialSkillsConfig config = ConfigManager.getServerConfig().getRacialSkills();
+		String displayName = isClassPassive ? getClassPassiveTitle() : tr("skill.dragonminez." + selectedSkill).getString();
+
+		String description = "";
+		if (isClassPassive) {
+			description = tr("class.dragonminez." + statsData.getCharacter().getCharacterClass() + ".passive.desc").getString();
+		} else if (selectedSkill.startsWith("racial_")) {
+			switch (selectedSkill) {
+				case "racial_human" -> {
+					int regen = (int) Math.round((config.getHumanKiRegenBoost() - 1.0) * 100);
+					description = tr("skill.dragonminez.racial_human.desc", regen).getString();
+				}
+				case "racial_saiyan" -> {
+					int zenkaiHealth = (int) Math.round((config.getSaiyanZenkaiHealthRegen() * 100));
+					int zenkaiStat = (int) Math.round((config.getSaiyanZenkaiStatBoost() * 100));
+					int cooldown = config.getSaiyanZenkaiCooldownSeconds();
+					int maxUses = config.getSaiyanZenkaiAmount();
+					int minLevel = config.getSaiyanZenkaiMinLevel();
+					description = tr("skill.dragonminez.racial_saiyan.desc", zenkaiHealth, zenkaiStat, cooldown, maxUses, minLevel).getString();
+				}
+				case "racial_namekian" -> {
+					int assimHealth = (int) Math.round(config.getNamekianAssimilationHealthRegen() * 100);
+					int assimStat = (int) Math.round(config.getNamekianAssimilationStatBoost() * 100);
+					int maxUses = config.getNamekianAssimilationAmount();
+					description = tr("skill.dragonminez.racial_namekian.desc", assimHealth, assimStat, maxUses).getString();
+				}
+				case "racial_frostdemon" -> {
+					int tpBoost = (int) Math.round((config.getFrostDemonTPBoost() - 1.0) * 100);
+					description = tr("skill.dragonminez.racial_frostdemon.desc", tpBoost).getString();
+				}
+				case "racial_bioandroid" -> {
+					int drainRatio = (int) Math.round(config.getBioAndroidDrainRatio() * 100);
+					int cooldown = config.getBioAndroidCooldownSeconds();
+					description = tr("skill.dragonminez.racial_bioandroid.desc", drainRatio, cooldown).getString();
+				}
+				case "racial_majin" -> {
+					int absHealth = (int) Math.round(config.getMajinAbsorptionHealthRegen() * 100);
+					int absStat = (int) Math.round(config.getMajinAbsorptionStatCopy() * 100);
+					int maxUses = config.getMajinAbsorptionAmount();
+					description = tr("skill.dragonminez.racial_majin.desc", absHealth, absStat, maxUses).getString();
+				}
+			}
+		} else description = tr("skill.dragonminez." + selectedSkill + ".desc").getString();
+
+		int startY = panelY + 40;
+
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, txt(displayName).withStyle(ChatFormatting.BOLD), panelX + 72, startY, 0xFFFFFFFF);
+
+		if (skill != null) {
+			TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.skills.level", skill.getLevel(), skill.getMaxLevel()), panelX + 72, startY + 12, 0xFFAAAAAA);
+			int upgradeCost = getUpgradeCost(selectedSkill, skill.getLevel());
+			if (upgradeCost != Integer.MAX_VALUE && upgradeCost > 0) {
+				TextUtil.drawCenteredStringWithBorder(graphics, this.font, txt("%d TPS".formatted(getUpgradeCost(selectedSkill, skill.getLevel()))), panelX + 72, startY + 24, 0xFFAAAAAA);
+			}
+		} else if (isClassPassive) {
+			TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("class.dragonminez.passive"), panelX + 72, startY + 12, 0xFFFFD200);
+		} else {
+			TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.skills.racial"), panelX + 72, startY + 12, 0xFF55FF55);
+		}
+
+		List<String> wrappedDesc = wrapText(description, 120);
+
+		int descY = startY + 70;
+		int boxX = panelX + 13;
+		int boxW = 130;
+		int lineHeight = this.font.lineHeight + 2;
+		int viewHeight = 6 * lineHeight;
+		int totalContentHeight = wrappedDesc.size() * lineHeight;
+
+		maxDescScroll = Math.max(0, totalContentHeight - viewHeight);
+		targetDescScroll = Mth.clamp(targetDescScroll, 0, maxDescScroll);
+		float tickDelta = Minecraft.getInstance().getDeltaTracker().getRealtimeDeltaTicks();
+		currentDescScroll = Mth.lerp(tickDelta * 0.4f, currentDescScroll, targetDescScroll);
+
+		TextUtil.renderScrollableText(graphics, this.font, wrappedDesc, boxX, descY, boxW, viewHeight, currentDescScroll, maxDescScroll, 0xFFCCCCCC);
+	}
+
+	private List<String> wrapText(String text, int maxWidth) {
+		return TextUtil.wrap(this.font, text, maxWidth, DMZ_FONT);
+	}
+
+	@Override
+	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+		double uiMouseX = toUiX(mouseX);
+		double uiMouseY = toUiY(mouseY);
+		int centerY = getUiHeight() / 2;
+		int leftPanelY = centerY - 105;
+		int scrollAmount = (int) Math.signum(scrollY);
+
+		if (uiMouseX >= currentLeftX && uiMouseX <= currentLeftX + 141 && uiMouseY >= leftPanelY && uiMouseY <= leftPanelY + 213) {
+			targetScroll = Mth.clamp(targetScroll - (scrollAmount * SKILL_ITEM_HEIGHT * 2), 0, maxScroll);
+			return true;
+		}
+
+		if (formsTransitionProgress < 1.0f) {
+			int descBoxX = currentRightX + 10;
+			int descBoxY = (centerY - 105) + 110;
+			int descBoxW = 136;
+			int descBoxH = 6 * 12;
+
+			if (uiMouseX >= descBoxX && uiMouseX <= descBoxX + descBoxW && uiMouseY >= descBoxY && uiMouseY <= descBoxY + descBoxH) {
+				targetDescScroll = Mth.clamp(targetDescScroll - (scrollAmount * 12 * 2), 0, maxDescScroll);
+				return true;
+			}
+
+			if (uiMouseX >= currentRightX && uiMouseX <= currentRightX + 141 && uiMouseY >= leftPanelY && uiMouseY <= leftPanelY + 213) {
+				return true;
+			}
+		}
+
+		if (currentCategory == SkillCategory.FORMS) {
+			formsZoom = Math.max(0.25f, Math.min(2.0f, formsZoom + scrollAmount * 0.1f));
+			return true;
+		}
+
+		return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+	}
+
+	private float calculateScrollPercent(double uiMouseY, int startY, int scrollBarHeight) {
+		float percent = (float) (uiMouseY - startY) / scrollBarHeight;
+		return Mth.clamp(percent, 0.0f, 1.0f);
+	}
+
+	@Override
+	public boolean keyPressed(net.minecraft.client.input.KeyEvent event) {
+		// While the import box is focused, keys (paste, typing, navigation) belong to it —
+		// not to the menu keybind, which would otherwise close the menu mid-typing.
+		if (techniqueImportBox != null && techniqueImportBox.isFocused() && event.key() != 256) {
+			if (techniqueImportBox.keyPressed(event) || techniqueImportBox.canConsumeInput()) {
+				return true;
+			}
+		}
+		return super.keyPressed(event);
+	}
+
+	@Override
+	public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		if (super.mouseClicked(event, doubleClick)) return true;
+
+		double uiMouseX = toUiX(mouseX);
+		double uiMouseY = toUiY(mouseY);
+
+		int centerY = getUiHeight() / 2;
+		int leftPanelY = centerY - 105;
+
+		int startY = leftPanelY + 30;
+		int scrollBarHeight = MAX_VISIBLE_SKILLS * SKILL_ITEM_HEIGHT;
+		int scrollBarX = currentLeftX + 135;
+
+		if (maxScroll > 0 && uiMouseX >= scrollBarX - 5 && uiMouseX <= scrollBarX + 10 && uiMouseY >= startY && uiMouseY <= startY + scrollBarHeight) {
+			isDraggingMainScroll = true;
+			targetScroll = calculateScrollPercent(uiMouseY, startY, scrollBarHeight) * maxScroll;
+			return true;
+		}
+
+		List<String> skillNames = getVisibleSkillNames();
+
+		if (uiMouseX >= currentLeftX + 10 && uiMouseX <= currentLeftX + 100 && uiMouseY >= startY && uiMouseY <= startY + scrollBarHeight) {
+			int index = (int) ((uiMouseY - startY + currentScroll) / SKILL_ITEM_HEIGHT);
+
+			if (index >= 0 && index < skillNames.size()) {
+				selectedSkill = skillNames.get(index);
+
+				if (currentCategory == SkillCategory.FORMS) {
+					selectedFormName = selectedSkill;
+
+					for (FormNode fn : formNodes) {
+						if (fn.data.getName().equals(selectedFormName)) {
+							selectedFormGroup = fn.group;
+							formsPanX = -fn.x;
+							formsPanY = -fn.y;
+							break;
+						}
+					}
+				} else {
+					targetDescScroll = 0;
+					currentDescScroll = 0;
+				}
+
+				refreshButtons();
+				return true;
+			}
+		}
+
+		if (uiMouseX >= currentLeftX && uiMouseX <= currentLeftX + 141 && uiMouseY >= leftPanelY && uiMouseY <= leftPanelY + 213) {
+			return true;
+		}
+
+		if (formsTransitionProgress < 1.0f) {
+			int descBoxY = (centerY - 105) + 110;
+			int descBoxH = 6 * 12;
+			int descScrollBarX = currentRightX + 140;
+
+			if (maxDescScroll > 0 && uiMouseX >= descScrollBarX - 5 && uiMouseX <= descScrollBarX + 10 && uiMouseY >= descBoxY && uiMouseY <= descBoxY + descBoxH) {
+				isDraggingDescScroll = true;
+				targetDescScroll = calculateScrollPercent(uiMouseY, descBoxY, descBoxH) * maxDescScroll;
+				return true;
+			}
+
+			if (uiMouseX >= currentRightX && uiMouseX <= currentRightX + 141 && uiMouseY >= leftPanelY && uiMouseY <= leftPanelY + 213) {
+				return true;
+			}
+		}
+
+		if (currentCategory == SkillCategory.FORMS && button == 0) {
+			FormNode clicked = getHoveredFormNode(uiMouseX, uiMouseY);
+
+			if (clicked != null) {
+				long now = System.currentTimeMillis();
+				boolean sameSelection = clicked.group.equalsIgnoreCase(selectedFormGroup) && clicked.data.getName().equalsIgnoreCase(selectedFormName);
+
+				if (sameSelection && (now - lastFormClickTime < 500)) {
+					Skill skill = statsData.getSkills().getSkill(clicked.formType);
+					int currentLevel = skill != null ? skill.getLevel() : 0;
+					int requiredLevel = clicked.data.getUnlockOnSkillLevel();
+					boolean canPurchaseLevel = requiredLevel == currentLevel + 1;
+					int targetLevel = Math.max(0, requiredLevel - 1);
+					int cost = getUpgradeCostForTargetLevel(clicked.formType, targetLevel);
+					boolean isStack = ConfigManager.getSkillsConfig().getStackSkills().contains(clicked.formType.toLowerCase(Locale.ROOT));
+					boolean isFirstStackLevel = isStack && targetLevel == 0;
+
+					if (canPurchaseLevel && !isFirstStackLevel && !isMasterOnlyFirstFormLevel(clicked.formType, targetLevel) && cost != -1 && cost != Integer.MAX_VALUE && statsData.getResources().getTrainingPoints() >= cost) {
+						NetworkHandler.INSTANCE.sendToServer(new UpdateSkillC2S(UpdateSkillC2S.SkillAction.UPGRADE, clicked.formType, cost));
+						updateStatsData();
+					}
+				} else {
+					selectedFormName = clicked.data.getName();
+					selectedFormGroup = clicked.group;
+					selectedSkill = selectedFormName;
+					refreshButtons();
+				}
+				lastFormClickTime = now;
+				return true;
+			} else {
+				isDraggingForms = true;
+				dragFormStartX = uiMouseX;
+				dragFormStartY = uiMouseY;
+				dragFormStartPanX = formsPanX;
+				dragFormStartPanY = formsPanY;
+
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	@Override
+	public boolean mouseDragged(net.minecraft.client.input.MouseButtonEvent event, double dragX, double dragY) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		double uiMouseY = toUiY(mouseY);
+		double uiMouseX = toUiX(mouseX);
+
+		if (isDraggingForms && button == 0) {
+			formsPanX = dragFormStartPanX + (float) (uiMouseX - dragFormStartX);
+			formsPanY = dragFormStartPanY + (float) (uiMouseY - dragFormStartY);
+			return true;
+		}
+
+		if (isDraggingMainScroll && maxScroll > 0) {
+			int centerY = getUiHeight() / 2;
+			int startY = (centerY - 105) + 30;
+			int scrollBarHeight = MAX_VISIBLE_SKILLS * SKILL_ITEM_HEIGHT;
+			targetScroll = calculateScrollPercent(uiMouseY, startY, scrollBarHeight) * maxScroll;
+			return true;
+		}
+
+		if (isDraggingDescScroll && maxDescScroll > 0) {
+			int centerY = getUiHeight() / 2;
+			int descBoxY = (centerY - 105) + 110;
+			int descBoxH = 6 * 12;
+			targetDescScroll = calculateScrollPercent(uiMouseY, descBoxY, descBoxH) * maxDescScroll;
+			return true;
+		}
+
+		return super.mouseDragged(event, dragX, dragY);
+	}
+
+	@Override
+	public boolean mouseReleased(net.minecraft.client.input.MouseButtonEvent event) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		if (isDraggingForms) {
+			isDraggingForms = false;
+			return true;
+		}
+		if (isDraggingMainScroll || isDraggingDescScroll) {
+			isDraggingMainScroll = false;
+			isDraggingDescScroll = false;
+			return true;
+		}
+		return super.mouseReleased(event);
+	}
+
+	private String getDisplayNameForEntry(String entryId) {
+		if (NEW_SKILL_ENTRY.equals(entryId)) return tr("gui.dragonminez.skills.new_skill").getString();
+		if (statsData == null) return entryId;
+		TechniqueData technique = statsData.getTechniques().getUnlockedTechniques().get(entryId);
+		if (technique == null || technique.getName() == null || technique.getName().isEmpty()) return entryId;
+		String rawName = technique.getName();
+		if (rawName.contains(".")) return tr(rawName).getString();
+		return rawName;
+	}
+
+	private String getClassPassiveTitle() {
+		String characterClass = statsData.getCharacter().getCharacterClass();
+		String rawTitle = tr("class.dragonminez." + characterClass).getString() + " " + tr("class.dragonminez.passive").getString();
+		return ChatFormatting.stripFormatting(rawTitle);
+	}
+
+	private void openTechniqueCreator() {
+		if (this.minecraft != null) this.minecraft.gui.setScreen(new TechniqueCreatorScreen(this));
+	}
+
+	private void renderPlayerModel(GuiGraphicsExtractor graphics, int x, int y, int scale, float mouseX, float mouseY, boolean isFormPreview) {
+		LivingEntity player = Minecraft.getInstance().player;
+		if (player == null) return;
+
+		String activeFormGroupO = null;
+		String activeFormO = null;
+		String activeStackFormGroupO = null;
+		String activeStackFormO = null;
+		Character character = null;
+		Status status = null;
+		boolean androidUpgradedO = false;
+		boolean androidUpgradedOverridden = false;
+
+		if (isFormPreview && selectedFormName != null && selectedFormGroup != null) {
+			var stats = StatsProvider.get(StatsCapability.INSTANCE, player).orElse(null);
+			if (stats != null) {
+				character = stats.getCharacter();
+				activeFormGroupO = character.getActiveFormGroup();
+				activeFormO = character.getActiveForm();
+				activeStackFormGroupO = character.getActiveStackFormGroup();
+				activeStackFormO = character.getActiveStackForm();
+
+				character.clearActiveForm();
+				character.clearActiveStackForm();
+
+				if (ConfigManager.getStackFormGroup(selectedFormGroup) != null) character.setActiveStackForm(selectedFormGroup, selectedFormName);
+				else character.setActiveForm(selectedFormGroup, selectedFormName);
+
+				status = stats.getStatus();
+				androidUpgradedO = status.isAndroidUpgraded();
+				if ("androidforms".equals(selectedFormGroup) && !androidUpgradedO) {
+					status.setAndroidUpgraded(true);
+					androidUpgradedOverridden = true;
+				}
+			}
+		}
+
+		int adjustedScale = getAdjustedModelScale(scale);
+
+		float xRotation = (float) Math.atan((double) ((float) y - mouseY) / 40.0F);
+		float yRotation = (float) Math.atan((double) ((float) x - mouseX) / 40.0F);
+
+		Quaternionf pose = (new Quaternionf()).rotateZ((float) Math.PI);
+		Quaternionf cameraOrientation = (new Quaternionf()).rotateX(xRotation * 20.0F * ((float) Math.PI / 180F));
+		pose.mul(cameraOrientation);
+
+		float yBodyRotO = player.yBodyRot;
+		float yRotO = player.getYRot();
+		float xRotO = player.getXRot();
+		float yHeadRotO = player.yHeadRotO;
+		float yHeadRot = player.yHeadRot;
+
+		player.yBodyRot = 180.0F + yRotation * 20.0F;
+		player.setYRot(180.0F + yRotation * 40.0F);
+		player.setXRot(-xRotation * 20.0F);
+		player.yHeadRot = player.getYRot();
+		player.yHeadRotO = player.getYRot();
+
+		graphics.pose().pushMatrix();
+		DMZSkinLayer.PREVIEW_MODE = character != null;
+		try {
+			EntityPreviewRenderContext.renderEntityInInventory(graphics, x, y, adjustedScale, new org.joml.Vector3f(0.0F, 0.0F, 0.0F), pose, cameraOrientation, player);
+		} finally {
+			DMZSkinLayer.PREVIEW_MODE = false;
+			graphics.pose().popMatrix();
+
+			player.yBodyRot = yBodyRotO;
+			player.setYRot(yRotO);
+			player.setXRot(xRotO);
+			player.yHeadRotO = yHeadRotO;
+			player.yHeadRot = yHeadRot;
+
+			if (character != null) {
+				character.clearActiveForm();
+				character.clearActiveStackForm();
+				character.setActiveForm(activeFormGroupO, activeFormO);
+				character.setActiveStackForm(activeStackFormGroupO, activeStackFormO);
+				if (androidUpgradedOverridden) status.setAndroidUpgraded(androidUpgradedO);
+			}
+		}
+	}
+}
+

@@ -1,0 +1,62 @@
+{
+  "targets": {
+    "dragonminez:h_blur": {},
+    "dragonminez:swap": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dragonminez:ki_blur_h",
+      "inputs": [
+        {
+          "sampler_name": "Diffuse",
+          "target": "minecraft:main",
+          "bilinear": true
+        }
+      ],
+      "output": "dragonminez:h_blur",
+      "uniforms": {
+        "BlurConfig": [
+          {
+            "name": "BloomRadius",
+            "type": "float",
+            "value": 4.0
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dragonminez:ki_blur_v",
+      "inputs": [
+        {
+          "sampler_name": "Diffuse",
+          "target": "dragonminez:h_blur",
+          "bilinear": true
+        }
+      ],
+      "output": "dragonminez:swap",
+      "uniforms": {
+        "BlurConfig": [
+          {
+            "name": "BloomRadius",
+            "type": "float",
+            "value": 4.0
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dragonminez:post_copy",
+      "inputs": [
+        {
+          "sampler_name": "Diffuse",
+          "target": "dragonminez:swap",
+          "bilinear": true
+        }
+      ],
+      "output": "minecraft:main"
+    }
+  ]
+}

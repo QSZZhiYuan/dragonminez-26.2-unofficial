@@ -1,0 +1,97 @@
+package com.dragonminez.common.network.C2S;
+
+import com.dragonminez.common.quest.PartyManager;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.chat.ClickEvent;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.HoverEvent;
+import net.minecraft.server.level.ServerPlayer;
+import com.dragonminez.compat.network.NetworkEvent;
+
+import java.util.function.Supplier;
+
+public class AcceptPartyInviteC2S {
+
+    private final boolean confirmedDifficultyChange;
+
+    public AcceptPartyInviteC2S() {
+        this(false);
+    }
+
+    public AcceptPartyInviteC2S(boolean confirmedDifficultyChange) {
+        this.confirmedDifficultyChange = confirmedDifficultyChange;
+    }
+
+    public AcceptPartyInviteC2S(FriendlyByteBuf buffer) {
+        this.confirmedDifficultyChange = buffer.readBoolean();
+    }
+
+    public void encode(FriendlyByteBuf buffer) {
+        buffer.writeBoolean(confirmedDifficultyChange);
+    }
+
+    public void handle(Supplier<NetworkEvent.Context> contextSupplier) {
+        NetworkEvent.Context context = contextSupplier.get();
+        context.enqueueWork(() -> {
+            ServerPlayer player = context.getSender();
+            if (player == null) return;
+
+            PartyManager.PendingInvite invite = PartyManager.getPendingInvite(player);
+            if (invite == null) {
+                player.sendSystemMessage(Component.translatable("quest.dmz.party.invite.none")
+                        .withStyle(ChatFormatting.RED));
+                return;
+            }
+
+            PartyManager.InviteAcceptResult result = PartyManager.acceptInvite(player, confirmedDifficultyChange);
+            if (result == PartyManager.InviteAcceptResult.EXPIRED) {
+                player.sendSystemMessage(Component.translatable("quest.dmz.party.invite.expired")
+                        .withStyle(ChatFormatting.RED));
+                return;
+            }
+
+            if (result == PartyManager.InviteAcceptResult.PARTY_FULL) {
+                player.sendSystemMessage(Component.translatable("quest.dmz.party.invite.party_full")
+                        .withStyle(ChatFormatting.RED));
+                return;
+            }
+
+            if (result == PartyManager.InviteAcceptResult.DIFFICULTY_TOO_LOW) {
+                player.sendSystemMessage(Component.translatable("quest.dmz.party.invite.difficulty_too_low")
+                        .withStyle(ChatFormatting.RED));
+                return;
+            }
+
+            if (result == PartyManager.InviteAcceptResult.DIFFICULTY_CONFIRM_REQUIRED) {
+                Component confirmButton = Component.translatable("quest.dmz.party.invite.difficulty_confirm.button")
+                        .withStyle(style -> style
+                                .withColor(ChatFormatting.GREEN)
+                                .withBold(true)
+                                .withClickEvent(new ClickEvent.RunCommand("dmzparty accept confirm"))
+                                .withHoverEvent(new HoverEvent.ShowText(Component.translatable("quest.dmz.party.invite.difficulty_confirm.hover"))));
+                player.sendSystemMessage(Component.translatable("quest.dmz.party.invite.difficulty_confirm")
+                        .withStyle(ChatFormatting.YELLOW));
+                player.sendSystemMessage(Component.literal("[").append(confirmButton).append(Component.literal("]")));
+                return;
+            }
+
+            if (result != PartyManager.InviteAcceptResult.SUCCESS) {
+                player.sendSystemMessage(Component.translatable("quest.dmz.party.invite.invalid")
+                        .withStyle(ChatFormatting.RED));
+                return;
+            }
+
+            player.sendSystemMessage(Component.translatable("quest.dmz.party.joined")
+                    .withStyle(ChatFormatting.GREEN));
+
+            ServerPlayer inviter = player.level().getServer().getPlayerList().getPlayer(invite.getInviterUUID());
+            if (inviter != null) {
+                inviter.sendSystemMessage(Component.translatable("quest.dmz.party.player.joined", player.getName())
+                        .withStyle(ChatFormatting.GREEN));
+            }
+        });
+        context.setPacketHandled(true);
+    }
+}
+

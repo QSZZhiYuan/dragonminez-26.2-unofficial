@@ -1,0 +1,643 @@
+package com.dragonminez.common.config;
+
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+@Getter
+public class SkillsConfig {
+	public static final String CURRENT_VERSION = ConfigManager.CONFIG_VERSION;
+
+	@Setter
+	private String configVersion;
+
+	@ConfigNonPreservable private final List<String> kiSkills = new ArrayList<>();
+	@ConfigNonPreservable private final List<String> formSkills = new ArrayList<>();
+	@ConfigNonPreservable private final List<String> stackSkills = new ArrayList<>();
+	@ConfigNonPreservable private final List<String> androidBlacklistedForms = new ArrayList<>();
+	private final Map<String, SkillCosts> skills = new HashMap<>();
+	private final Map<String, List<String>> skillOfferings = new HashMap<>();
+	@ConfigNonPreservable private final List<String> strikeSkills = new ArrayList<>();
+	@ConfigNonPreservable private final List<String> evasionSkills = new ArrayList<>();
+
+	public SkillsConfig() {
+		createDefaults();
+	}
+
+	private void createDefaults() {
+		formSkills.add("superforms");
+		formSkills.add("legendaryforms");
+		formSkills.add("godforms");
+		formSkills.add("androidforms");
+
+		stackSkills.add("kaioken");
+		stackSkills.add("ultimate");
+//		stackSkills.add("ultrainstinct");
+//		stackSkills.add("ultraego");
+
+		androidBlacklistedForms.add("superforms");
+		androidBlacklistedForms.add("legendaryforms");
+
+		kiSkills.add("spiritbomb");
+		kiSkills.add("supernova");
+		kiSkills.add("supernova_cooler");
+		kiSkills.add("big_bang");
+		kiSkills.add("burning_attack");
+		kiSkills.add("sokidan");
+		kiSkills.add("final_flash");
+		kiSkills.add("heat_dome");
+		kiSkills.add("kikoho");
+		kiSkills.add("neo_kikoho");
+		kiSkills.add("kamehameha");
+		kiSkills.add("galick_gun");
+		kiSkills.add("masenko");
+		kiSkills.add("kienzan");
+		kiSkills.add("kienzan_doble");
+		kiSkills.add("death_beam");
+		kiSkills.add("makkanko");
+		kiSkills.add("emperor_death_beam");
+		kiSkills.add("dodonpa");
+		kiSkills.add("ki_barrage");
+		kiSkills.add("final_explosion");
+		kiSkills.add("soul_punisher");
+		kiSkills.add("fake_moon");
+		kiSkills.add("mouth_blast");
+		kiSkills.add("assault_rain");
+		kiSkills.add("blaster_meteor");
+		kiSkills.add("kill_driver");
+		kiSkills.add("hellzone_grenade");
+		evasionSkills.add("taiyoken");
+		evasionSkills.add("rage_scream");
+		evasionSkills.add("afterimage");
+		evasionSkills.add("sleep_recovery");
+		evasionSkills.add("dimensional_teleport");
+		evasionSkills.add("candy_beam");
+		evasionSkills.add("gum_bind");
+
+		skills.put("ki_barrage", new SkillCosts(List.of(1000)));
+		skills.put("masenko", new SkillCosts(List.of(1500)));
+		skills.put("kamehameha", new SkillCosts(List.of(2000)));
+		skills.put("galick_gun", new SkillCosts(List.of(2000)));
+		skills.put("taiyoken", new SkillCosts(List.of(2000)));
+		skills.put("afterimage", new SkillCosts(List.of(2500)));
+		skills.put("dimensional_teleport", new SkillCosts(List.of(12000)));
+		skills.put("sleep_recovery", new SkillCosts(new ArrayList<>(List.of(3000)), new ArrayList<>(List.of("majin"))));
+		skills.put("candy_beam", new SkillCosts(new ArrayList<>(List.of(5000)), new ArrayList<>(List.of("majin"))));
+		skills.put("gum_bind", new SkillCosts(new ArrayList<>(List.of(9000)), new ArrayList<>(List.of("majin"))));
+		skills.put("death_beam", new SkillCosts(List.of(2500)));
+		skills.put("dodonpa", new SkillCosts(List.of(3000)));
+		skills.put("fake_moon", new SkillCosts(List.of(3000)));
+		skills.put("kienzan", new SkillCosts(List.of(3000)));
+		skills.put("makkanko", new SkillCosts(List.of(3500)));
+		skills.put("burning_attack", new SkillCosts(List.of(3500)));
+		skills.put("big_bang", new SkillCosts(List.of(4000)));
+		skills.put("mouth_blast", new SkillCosts(List.of(4500)));
+		skills.put("assault_rain", new SkillCosts(List.of(4500)));
+		skills.put("blaster_meteor", new SkillCosts(List.of(5000)));
+		skills.put("sokidan", new SkillCosts(List.of(4000)));
+		skills.put("kienzan_doble", new SkillCosts(List.of(4000)));
+
+		skills.put("emperor_death_beam", new SkillCosts(List.of(5000)));
+		skills.put("final_flash", new SkillCosts(List.of(5000)));
+		skills.put("heat_dome", new SkillCosts(List.of(6000)));
+		skills.put("kikoho", new SkillCosts(List.of(5000)));
+		skills.put("neo_kikoho", new SkillCosts(List.of(8000)));
+		skills.put("spiritbomb", new SkillCosts(List.of(10000)));
+		skills.put("supernova", new SkillCosts(List.of(12000)));
+
+		skills.put("supernova_cooler", new SkillCosts(List.of(15000)));
+		skills.put("final_explosion", new SkillCosts(List.of(20000)));
+		skills.put("soul_punisher", new SkillCosts(List.of(25000)));
+		skills.put("kill_driver", new SkillCosts(List.of(16000)));
+		skills.put("hellzone_grenade", new SkillCosts(List.of(6000)));
+
+		strikeSkills.add("meteor");
+		strikeSkills.add("dragon_fist");
+		strikeSkills.add("deadly_dance_vegetto");
+		strikeSkills.add("deadly_dance");
+		strikeSkills.add("kaioken_attack");
+		strikeSkills.add("wolf_fang");
+		strikeSkills.add("oozaru_fist");
+		strikeSkills.add("super_god_fist");
+		strikeSkills.add("oozaru_slam");
+		strikeSkills.add("gum_punch");
+		strikeSkills.add("blue_hurricane");
+		strikeSkills.add("dimensional_punch");
+		strikeSkills.add("dimensional_sword_attack");
+		strikeSkills.add("spirit_breaking_cannon");
+		strikeSkills.add("grab");
+		strikeSkills.add("shining_sword_attack");
+		strikeSkills.add("combo_meteor");
+		strikeSkills.add("meteor_burst");
+		strikeSkills.add("mystic_ball");
+		strikeSkills.add("darkness_eye_beam");
+		strikeSkills.add("death_chaser");
+		strikeSkills.add("android_combo");
+		strikeSkills.add("beam_sword_slash");
+		strikeSkills.add("perfect_rush");
+		strikeSkills.add("spirit_breaker");
+
+		skills.put("meteor",             new SkillCosts(List.of(3000)));
+		skills.put("wolf_fang",          new SkillCosts(List.of(3500)));
+		skills.put("kaioken_attack",     new SkillCosts(List.of(5000)));
+		skills.put("dragon_fist",        new SkillCosts(List.of(6000)));
+		skills.put("deadly_dance",       new SkillCosts(List.of(8000)));
+		skills.put("super_god_fist",     new SkillCosts(List.of(10000)));
+		skills.put("deadly_dance_vegetto", new SkillCosts(List.of(12000)));
+		skills.put("oozaru_fist",        new SkillCosts(List.of(15000)));
+		skills.put("oozaru_slam",        new SkillCosts(List.of(4000)));
+		skills.put("gum_punch",          new SkillCosts(new ArrayList<>(List.of(4000)), new ArrayList<>(List.of("majin"))));
+		skills.put("blue_hurricane",     new SkillCosts(List.of(5000)));
+		skills.put("dimensional_punch",  new SkillCosts(List.of(18000)));
+		skills.put("dimensional_sword_attack", new SkillCosts(List.of(22000)));
+		skills.put("spirit_breaking_cannon", new SkillCosts(List.of(12000)));
+		skills.put("grab", new SkillCosts(List.of(3500)));
+		skills.put("shining_sword_attack", new SkillCosts(List.of(9000)));
+		skills.put("combo_meteor", new SkillCosts(List.of(7000)));
+		skills.put("meteor_burst", new SkillCosts(List.of(24000)));
+		skills.put("mystic_ball", new SkillCosts(new ArrayList<>(List.of(11000)), new ArrayList<>(List.of("majin"))));
+		skills.put("darkness_eye_beam", new SkillCosts(new ArrayList<>(List.of(11000)), new ArrayList<>(List.of("namekian"))));
+		skills.put("death_chaser", new SkillCosts(List.of(15000)));
+		skills.put("android_combo", new SkillCosts(new ArrayList<>(List.of(14000)), new ArrayList<>(List.of("android"))));
+		skills.put("perfect_rush", new SkillCosts(new ArrayList<>(List.of(15000)), new ArrayList<>(List.of("bioandroid"))));
+		skills.put("spirit_breaker", new SkillCosts(List.of(17000)));
+		skills.put("beam_sword_slash", new SkillCosts(List.of(16000)));
+
+		List<Integer> jumpCosts = new ArrayList<>();
+		jumpCosts.add(300);
+		jumpCosts.add(600);
+		jumpCosts.add(900);
+		jumpCosts.add(1200);
+		jumpCosts.add(1500);
+		jumpCosts.add(1800);
+		jumpCosts.add(2100);
+		jumpCosts.add(2400);
+		jumpCosts.add(2700);
+		jumpCosts.add(3000);
+		skills.put("jump", new SkillCosts(jumpCosts));
+
+		List<Integer> sprintCosts = new ArrayList<>();
+		sprintCosts.add(300);
+		sprintCosts.add(600);
+		sprintCosts.add(900);
+		sprintCosts.add(1200);
+		sprintCosts.add(1500);
+		sprintCosts.add(1800);
+		sprintCosts.add(2100);
+		sprintCosts.add(2400);
+		sprintCosts.add(2700);
+		sprintCosts.add(3000);
+		skills.put("sprint", new SkillCosts(sprintCosts));
+
+		List<Integer> flyCosts = new ArrayList<>();
+		flyCosts.add(1500);
+		flyCosts.add(600);
+		flyCosts.add(900);
+		flyCosts.add(1200);
+		flyCosts.add(1500);
+		flyCosts.add(1800);
+		flyCosts.add(2100);
+		flyCosts.add(2400);
+		flyCosts.add(2700);
+		flyCosts.add(3000);
+		skills.put("fly", new SkillCosts(flyCosts));
+
+		List<Integer> meditationCosts = new ArrayList<>();
+		meditationCosts.add(300);
+		meditationCosts.add(600);
+		meditationCosts.add(900);
+		meditationCosts.add(1200);
+		meditationCosts.add(1500);
+		meditationCosts.add(1800);
+		meditationCosts.add(2100);
+		meditationCosts.add(2400);
+		meditationCosts.add(2700);
+		meditationCosts.add(3000);
+		skills.put("meditation", new SkillCosts(meditationCosts));
+
+		List<Integer> kiSenseCosts = new ArrayList<>();
+		kiSenseCosts.add(300);
+		kiSenseCosts.add(600);
+		kiSenseCosts.add(900);
+		kiSenseCosts.add(1200);
+		kiSenseCosts.add(1500);
+		kiSenseCosts.add(1800);
+		kiSenseCosts.add(2100);
+		kiSenseCosts.add(2400);
+		kiSenseCosts.add(2700);
+		kiSenseCosts.add(3000);
+		skills.put("kisense", new SkillCosts(kiSenseCosts));
+
+		List<Integer> potentialUnlockCosts = new ArrayList<>();
+		potentialUnlockCosts.add(600);
+		potentialUnlockCosts.add(1600);
+		potentialUnlockCosts.add(2400);
+		potentialUnlockCosts.add(3200);
+		potentialUnlockCosts.add(4000);
+		potentialUnlockCosts.add(4800);
+		potentialUnlockCosts.add(5600);
+		potentialUnlockCosts.add(6400);
+		potentialUnlockCosts.add(7200);
+		potentialUnlockCosts.add(8000);
+		potentialUnlockCosts.add(-1);
+		potentialUnlockCosts.add(8800);
+		potentialUnlockCosts.add(9600);
+		skills.put("potentialunlock", new SkillCosts(potentialUnlockCosts));
+
+		skills.put("kicontrol", new SkillCosts(List.of(3_000)));
+
+		List<Integer> kiBoostCosts = new ArrayList<>();
+		kiBoostCosts.add(2000);
+		kiBoostCosts.add(4000);
+		kiBoostCosts.add(6000);
+		kiBoostCosts.add(8000);
+		skills.put("kiboost", new SkillCosts(kiBoostCosts));
+
+		List<Integer> kiManipulationCosts = new ArrayList<>();
+		kiManipulationCosts.add(600);
+		kiManipulationCosts.add(1200);
+		kiManipulationCosts.add(1800);
+		kiManipulationCosts.add(2200);
+		kiManipulationCosts.add(2600);
+		kiManipulationCosts.add(2800);
+		kiManipulationCosts.add(3000);
+		kiManipulationCosts.add(3200);
+		kiManipulationCosts.add(3600);
+		kiManipulationCosts.add(4000);
+		skills.put("kimanipulation", new SkillCosts(kiManipulationCosts));
+
+		List<Integer> instantTransmission = new ArrayList<>();
+		instantTransmission.add(600);
+		instantTransmission.add(1200);
+		instantTransmission.add(1800);
+		instantTransmission.add(2200);
+		instantTransmission.add(2600);
+		instantTransmission.add(2800);
+		instantTransmission.add(3000);
+		instantTransmission.add(3200);
+		instantTransmission.add(3600);
+		instantTransmission.add(4000);
+		skills.put("instant_transmission", new SkillCosts(instantTransmission));
+
+		List<Integer> defensePenetration = new ArrayList<>();
+		defensePenetration.add(600);
+		defensePenetration.add(1200);
+		defensePenetration.add(1800);
+		defensePenetration.add(2200);
+		defensePenetration.add(2600);
+		defensePenetration.add(2800);
+		defensePenetration.add(3000);
+		defensePenetration.add(3200);
+		defensePenetration.add(3600);
+		defensePenetration.add(4000);
+		skills.put("defense_penetration", new SkillCosts(defensePenetration));
+
+		List<Integer> healingReduction = new ArrayList<>();
+		healingReduction.add(600);
+		healingReduction.add(1200);
+		healingReduction.add(1800);
+		healingReduction.add(2200);
+		healingReduction.add(2600);
+		healingReduction.add(2800);
+		healingReduction.add(3000);
+		healingReduction.add(3200);
+		healingReduction.add(3600);
+		healingReduction.add(4000);
+		skills.put("healing_reduction", new SkillCosts(healingReduction));
+
+		List<Integer> kiInfusion = new ArrayList<>();
+		kiInfusion.add(600);
+		kiInfusion.add(1200);
+		kiInfusion.add(1800);
+		kiInfusion.add(2200);
+		kiInfusion.add(2600);
+		kiInfusion.add(2800);
+		kiInfusion.add(3000);
+		kiInfusion.add(3200);
+		kiInfusion.add(3600);
+		kiInfusion.add(4000);
+		skills.put("ki_infusion", new SkillCosts(kiInfusion));
+
+		List<Integer> kiProtection = new ArrayList<>();
+		kiProtection.add(600);
+		kiProtection.add(1200);
+		kiProtection.add(1800);
+		kiProtection.add(2200);
+		kiProtection.add(2600);
+		kiProtection.add(2800);
+		kiProtection.add(3000);
+		kiProtection.add(3200);
+		kiProtection.add(3600);
+		kiProtection.add(4000);
+		skills.put("kiprotection", new SkillCosts(kiProtection));
+
+		List<Integer> kaiokenCosts = new ArrayList<>();
+		kaiokenCosts.add(1000);
+		kaiokenCosts.add(1500);
+		kaiokenCosts.add(2500);
+		kaiokenCosts.add(4000);
+		kaiokenCosts.add(7500);
+//		kaiokenCosts.add(25000);
+		skills.put("kaioken", new SkillCosts(kaiokenCosts));
+
+		skills.put("ultimate", new SkillCosts(List.of(-1)));
+
+//		List<Integer> ultraInstinctCosts = new ArrayList<>();
+//		ultraInstinctCosts.add(-1);
+//		ultraInstinctCosts.add(5000);
+//		skills.put("ultrainstinct", new SkillCosts(ultraInstinctCosts));
+
+//		List<Integer> ultraEgoCosts = new ArrayList<>();
+//		ultraEgoCosts.add(-1);
+//		ultraEgoCosts.add(5000);
+//		skills.put("ultraego", new SkillCosts(ultraEgoCosts));
+
+		List<Integer> fusionCosts = new ArrayList<>();
+		fusionCosts.add(25_000);
+		fusionCosts.add(5_000);
+		fusionCosts.add(10_000);
+		fusionCosts.add(15_000);
+		fusionCosts.add(20_000);
+		skills.put("fusion", new SkillCosts(fusionCosts));
+
+		List<String> roshiSkills = new ArrayList<>();
+		roshiSkills.add("jump");
+		roshiSkills.add("meditation");
+		roshiSkills.add("kicontrol");
+		roshiSkills.add("kamehameha");
+		roshiSkills.add("afterimage");
+		skillOfferings.put("roshi", roshiSkills);
+
+		List<String> gokuSkills = new ArrayList<>();
+		gokuSkills.add("kicontrol");
+		gokuSkills.add("fly");
+		gokuSkills.add("instant_transmission");
+		gokuSkills.add("fusion");
+		gokuSkills.add("kamehameha");
+		gokuSkills.add("spiritbomb");
+		gokuSkills.add("dragon_fist");
+		gokuSkills.add("super_god_fist");
+		gokuSkills.add("oozaru_fist");
+		gokuSkills.add("beam_sword_slash");
+		skillOfferings.put("goku", gokuSkills);
+
+		List<String> kingKaiSkills = new ArrayList<>();
+		kingKaiSkills.add("kicontrol");
+		kingKaiSkills.add("kaioken");
+		kingKaiSkills.add("potentialunlock");
+		kingKaiSkills.add("kimanipulation");
+		kingKaiSkills.add("kaioken_attack");
+		kingKaiSkills.add("spiritbomb");
+		skillOfferings.put("kingkai", kingKaiSkills);
+
+		List<String> vegetaSkills = new ArrayList<>();
+		vegetaSkills.add("kicontrol");
+		vegetaSkills.add("defense_penetration");
+		vegetaSkills.add("potentialunlock");
+		vegetaSkills.add("galick_gun");
+		vegetaSkills.add("big_bang");
+		vegetaSkills.add("final_flash");
+		vegetaSkills.add("final_explosion");
+		vegetaSkills.add("fake_moon");
+		vegetaSkills.add("deadly_dance_vegetto");
+		vegetaSkills.add("spirit_breaker");
+		vegetaSkills.add("spirit_breaking_cannon");
+		skillOfferings.put("vegeta", vegetaSkills);
+
+		List<String> oldKaiSkills = new ArrayList<>();
+		oldKaiSkills.add("kicontrol");
+		oldKaiSkills.add("ki_infusion");
+		oldKaiSkills.add("healing_reduction");
+		oldKaiSkills.add("soul_punisher");
+		skillOfferings.put("oldkai", oldKaiSkills);
+
+		List<String> gohanSkills = new ArrayList<>();
+		gohanSkills.add("kicontrol");
+		gohanSkills.add("kiboost");
+		gohanSkills.add("kiprotection");
+		gohanSkills.add("kisense");
+		gohanSkills.add("masenko");
+		gohanSkills.add("makkanko");
+		gohanSkills.add("kamehameha");
+		gohanSkills.add("ki_barrage");
+		skillOfferings.put("gohan", gohanSkills);
+
+		List<String> piccoloSkills = new ArrayList<>();
+		piccoloSkills.add("potentialunlock");
+		piccoloSkills.add("kicontrol");
+		piccoloSkills.add("masenko");
+		piccoloSkills.add("makkanko");
+		piccoloSkills.add("ki_barrage");
+		piccoloSkills.add("kienzan");
+		piccoloSkills.add("hellzone_grenade");
+		piccoloSkills.add("darkness_eye_beam");
+		skillOfferings.put("piccolo", piccoloSkills);
+
+		List<String> krillinSkills = new ArrayList<>();
+		krillinSkills.add("kicontrol");
+		krillinSkills.add("sprint");
+		krillinSkills.add("kisense");
+		krillinSkills.add("kienzan");
+		krillinSkills.add("kienzan_doble");
+		krillinSkills.add("ki_barrage");
+		krillinSkills.add("taiyoken");
+		krillinSkills.add("afterimage");
+		krillinSkills.add("deadly_dance");
+		skillOfferings.put("krillin", krillinSkills);
+
+		List<String> friezaSkills = new ArrayList<>();
+		friezaSkills.add("kicontrol");
+		friezaSkills.add("fly");
+		friezaSkills.add("jump");
+		friezaSkills.add("sprint");
+		friezaSkills.add("kisense");
+		friezaSkills.add("meditation");
+		friezaSkills.add("potentialunlock");
+		friezaSkills.add("death_beam");
+		friezaSkills.add("emperor_death_beam");
+		friezaSkills.add("supernova");
+		friezaSkills.add("kienzan_doble");
+		friezaSkills.add("deadly_dance");
+		friezaSkills.add("meteor");
+		friezaSkills.add("death_chaser");
+		skillOfferings.put("frieza", friezaSkills);
+
+		List<String> trunksSkills = new ArrayList<>();
+		trunksSkills.add("kicontrol");
+		trunksSkills.add("kiboost");
+		trunksSkills.add("kiprotection");
+		trunksSkills.add("burning_attack");
+		trunksSkills.add("heat_dome");
+		trunksSkills.add("shining_sword_attack");
+		trunksSkills.add("galick_gun");
+		trunksSkills.add("ki_barrage");
+		trunksSkills.add("meteor");
+		skillOfferings.put("trunks", trunksSkills);
+
+		List<String> cellSkills = new ArrayList<>();
+		cellSkills.add("kicontrol");
+		cellSkills.add("instant_transmission");
+		cellSkills.add("kimanipulation");
+		cellSkills.add("ki_infusion");
+		cellSkills.add("kiprotection");
+		cellSkills.add("defense_penetration");
+		cellSkills.add("healing_reduction");
+		cellSkills.add("kiboost");
+		cellSkills.add("kamehameha");
+		cellSkills.add("kienzan");
+		cellSkills.add("galick_gun");
+		cellSkills.add("masenko");
+		cellSkills.add("death_beam");
+		cellSkills.add("ki_barrage");
+		cellSkills.add("afterimage");
+		cellSkills.add("deadly_dance");
+		cellSkills.add("meteor");
+		cellSkills.add("android_combo");
+		cellSkills.add("perfect_rush");
+		skillOfferings.put("cell", cellSkills);
+
+		List<String> yamchaSkills = new ArrayList<>();
+		yamchaSkills.add("kicontrol");
+		yamchaSkills.add("ki_infusion");
+		yamchaSkills.add("wolf_fang");
+		yamchaSkills.add("sokidan");
+		yamchaSkills.add("kamehameha");
+		yamchaSkills.add("ki_barrage");
+		skillOfferings.put("yamcha", yamchaSkills);
+
+		List<String> tienSkills = new ArrayList<>();
+		tienSkills.add("kicontrol");
+		tienSkills.add("taiyoken");
+		tienSkills.add("dodonpa");
+		tienSkills.add("kikoho");
+		tienSkills.add("neo_kikoho");
+		skillOfferings.put("tien", tienSkills);
+
+		List<String> babaEarthSkills = new ArrayList<>();
+		babaEarthSkills.add("kicontrol");
+		babaEarthSkills.add("meditation");
+		skillOfferings.put("baba_earth", babaEarthSkills);
+
+		List<String> buuSkills = new ArrayList<>();
+		buuSkills.add("assault_rain");
+		buuSkills.add("gum_punch");
+		buuSkills.add("mystic_ball");
+		buuSkills.add("sleep_recovery");
+		buuSkills.add("candy_beam");
+		buuSkills.add("gum_bind");
+		skillOfferings.put("buu", buuSkills);
+
+		List<String> defaultSkills = new ArrayList<>();
+		defaultSkills.add("kicontrol");
+		defaultSkills.add("jump");
+		skillOfferings.put("default", defaultSkills);
+	}
+
+	public SkillCosts getSkillCosts(String skillName) {
+		return skills.getOrDefault(skillName.toLowerCase(), new SkillCosts(new ArrayList<>(), new ArrayList<>()));
+	}
+
+	public boolean isSkillAllowedForRace(String skillName, String raceName) {
+		return isSkillAllowedForRace(skillName, raceName, false);
+	}
+
+	public boolean isSkillAllowedForRace(String skillName, String raceName, boolean androidUpgraded) {
+		if (skillName == null || skillName.isEmpty()) return false;
+
+		SkillCosts skillCosts = getSkillCosts(skillName);
+		if (skillCosts == null || skillCosts.getAllowedRaces() == null || skillCosts.getAllowedRaces().isEmpty()) return true;
+		if (raceName == null || raceName.isEmpty()) return false;
+
+		String normalizedRace = raceName.toLowerCase();
+		for (String allowedRace : skillCosts.getAllowedRaces()) {
+			if (allowedRace == null || allowedRace.isEmpty()) continue;
+			String normalizedAllowed = allowedRace.toLowerCase();
+			if (normalizedAllowed.equals("all") || normalizedAllowed.equals(normalizedRace)) return true;
+			if (androidUpgraded && normalizedAllowed.equals("android")) return true;
+		}
+
+		return false;
+	}
+
+	public boolean addMissingDefaults() {
+		SkillsConfig defaults = new SkillsConfig();
+		boolean changed = addMissing(kiSkills, defaults.kiSkills);
+        changed |= kiSkills.removeAll(defaults.evasionSkills);
+        changed |= strikeSkills.removeAll(defaults.evasionSkills);
+		changed |= addMissing(strikeSkills, defaults.strikeSkills);
+		changed |= addMissing(evasionSkills, defaults.evasionSkills);
+		for (Map.Entry<String, SkillCosts> entry : defaults.skills.entrySet()) {
+			String id = entry.getKey();
+			if (skills.containsKey(id)) continue;
+			skills.put(id, entry.getValue());
+			changed = true;
+			for (Map.Entry<String, List<String>> offering : defaults.skillOfferings.entrySet()) {
+				if (!offering.getValue().contains(id)) continue;
+				List<String> offered = skillOfferings.computeIfAbsent(offering.getKey(), key -> new ArrayList<>());
+				if (!offered.contains(id)) offered.add(id);
+			}
+		}
+		for (Map.Entry<String, List<String>> offering : defaults.skillOfferings.entrySet()) {
+			if (skillOfferings.containsKey(offering.getKey())) continue;
+			skillOfferings.put(offering.getKey(), new ArrayList<>(offering.getValue()));
+			changed = true;
+		}
+		return changed;
+	}
+
+	private static boolean addMissing(List<String> target, List<String> defaults) {
+		boolean changed = false;
+		for (String id : defaults) {
+			if (target.contains(id)) continue;
+			target.add(id);
+			changed = true;
+		}
+		return changed;
+	}
+
+	public boolean isTechniqueSkill(String skillName) {
+		if (skillName == null) return false;
+		String id = skillName.toLowerCase(Locale.ROOT);
+		return kiSkills.contains(id) || strikeSkills.contains(id) || evasionSkills.contains(id);
+	}
+
+	public MutableComponent describeAllowedRaces(String skillName) {
+		List<String> races = skillName == null ? null : getSkillCosts(skillName).getAllowedRaces();
+		if (races == null || races.isEmpty() || races.stream().anyMatch("all"::equalsIgnoreCase))
+			return Component.translatable("gui.dragonminez.technique.races.all").withStyle(ChatFormatting.GREEN);
+
+		MutableComponent out = Component.empty();
+		boolean first = true;
+		for (String race : races) {
+			if (race == null || race.isBlank()) continue;
+			if (!first) out.append(", ");
+			out.append(Component.translatableWithFallback("race.dragonminez." + race.toLowerCase(Locale.ROOT), race));
+			first = false;
+		}
+		return out;
+	}
+
+	@Getter
+	@Setter
+	@NoArgsConstructor
+	@AllArgsConstructor
+	public static class SkillCosts {
+		private List<Integer> costs = new ArrayList<>();
+		private List<String> allowedRaces = new ArrayList<>();
+
+		public SkillCosts(List<Integer> costs) {
+			this.costs = costs;
+			this.allowedRaces = new ArrayList<>();
+		}
+	}
+}

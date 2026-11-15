@@ -1,0 +1,40 @@
+{
+  "targets": {
+    "dragonminez:gray_swap": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dragonminez:gravity_red",
+      "inputs": [
+        {
+          "sampler_name": "Diffuse",
+          "target": "minecraft:main",
+          "bilinear": true
+        }
+      ],
+      "output": "dragonminez:gray_swap",
+      "uniforms": {
+        "GravityConfig": [
+          {
+            "name": "Intensity",
+            "type": "float",
+            "value": 1.0
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dragonminez:post_copy",
+      "inputs": [
+        {
+          "sampler_name": "Diffuse",
+          "target": "dragonminez:gray_swap",
+          "bilinear": true
+        }
+      ],
+      "output": "minecraft:main"
+    }
+  ]
+}

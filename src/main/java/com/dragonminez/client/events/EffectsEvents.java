@@ -1,0 +1,219 @@
+package com.dragonminez.client.events;
+
+import com.dragonminez.Reference;
+import com.dragonminez.client.render.effects.KiChargeEffects;
+import com.dragonminez.client.systems.KiBurstShakeState;
+import com.dragonminez.common.init.MainEffects;
+import com.dragonminez.common.init.entities.ki.AbstractKiProjectile;
+import com.dragonminez.common.init.entities.ki.KiBlastEntity;
+import com.dragonminez.common.init.entities.ki.KiWaveEntity;
+import com.dragonminez.common.init.entities.sagas.DBSagasEntity;
+import com.dragonminez.common.stats.extras.ActionMode;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.world.entity.player.Player;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.neoforge.client.event.ViewportEvent;
+import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.neoforge.event.tick.PlayerTickEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.neoforge.event.tick.LevelTickEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
+
+@EventBusSubscriber(modid = Reference.MOD_ID, value = Dist.CLIENT)
+public class EffectsEvents {
+	private static boolean isBioAndroidDrainingCache = false;
+	private static boolean isChargingFormCache = false;
+	private static boolean isOverchargingCache = false;
+
+	@SubscribeEvent
+	public static void onClientTick(ClientTickEvent.Post event) {
+		Minecraft mc = Minecraft.getInstance();
+		Player player = mc.player;
+		KiChargeEffects.tick(mc);
+		if (player == null) {
+			isBioAndroidDrainingCache = false;
+			isChargingFormCache = false;
+			isOverchargingCache = false;
+			return;
+		}
+		if (mc.isPaused()) return;
+
+		if (player.hasEffect(MainEffects.STUN)) {
+			isBioAndroidDrainingCache = StatsProvider.get(StatsCapability.INSTANCE, player)
+					.map(data -> "bioandroid".equals(data.getCharacter().getRaceName()) && data.getStatus().getDrainingTargetId() != -1)
+					.orElse(false);
+		} else isBioAndroidDrainingCache = false;
+
+		isChargingFormCache = StatsProvider.get(StatsCapability.INSTANCE, player)
+				.map(data -> (data.getStatus().isAuraActive() && !data.getStatus().isPermanentAura())).orElse(false);
+		isOverchargingCache = StatsProvider.get(StatsCapability.INSTANCE, player)
+				.map(data -> data.getStatus().isChargingKi() && (data.getStatus().isKiBurstArmed() || data.getStatus().isSurgeActive())).orElse(false);
+	}
+
+	@SubscribeEvent
+	public static void onCameraSetup(ViewportEvent.ComputeCameraAngles event) {
+		Minecraft mc = Minecraft.getInstance();
+		Player player = mc.player;
+
+		if (player == null || mc.isPaused()) return;
+
+		double time = player.level().getGameTime() + Minecraft.getInstance().getDeltaTracker().getGameTimeDeltaTicks();
+
+        double shakeRadius = 15.0D;
+        var nearbyEntities = player.level().getEntitiesOfClass(DBSagasEntity.class, player.getBoundingBox().inflate(shakeRadius));
+
+        for (DBSagasEntity entity : nearbyEntities) {
+            if (entity.isAlive() && entity.isCasting() && entity.getSkillType() == 7) {
+
+                double distance = player.distanceTo(entity);
+                if (distance <= shakeRadius) {
+
+                    float intensity = (float) (1.0D - (distance / shakeRadius));
+
+                    float shakePitch = (player.getRandom().nextFloat() - 0.5F) * 2.5F * intensity;
+                    float shakeYaw = (player.getRandom().nextFloat() - 0.5F) * 2.5F * intensity;
+                    float shakeRoll = (player.getRandom().nextFloat() - 0.5F) * 1.5F * intensity;
+
+                    event.setPitch(event.getPitch() + shakePitch);
+                    event.setYaw(event.getYaw() + shakeYaw);
+                    event.setRoll(event.getRoll() + shakeRoll);
+                    break;
+                }
+            }
+        }
+
+        double kiShakeRadius = 50.0D;
+        var nearbyKiAttacks = player.level().getEntitiesOfClass(AbstractKiProjectile.class, player.getBoundingBox().inflate(kiShakeRadius));
+
+        for (AbstractKiProjectile kiAttack : nearbyKiAttacks) {
+
+            boolean isActuallyFiring = false;
+
+            if (kiAttack instanceof KiWaveEntity wave) {
+                isActuallyFiring = wave.isFiring();
+            } else if (kiAttack instanceof KiBlastEntity) {
+                isActuallyFiring = true;
+            }
+
+            if (kiAttack.isAlive() && isActuallyFiring) {
+                double distance = player.distanceTo(kiAttack);
+                if (distance <= kiShakeRadius) {
+                    float intensity = (float) (1.0D - (distance / kiShakeRadius));
+
+                    float shakePitch = (player.getRandom().nextFloat() - 0.5F) * 0.5F * intensity;
+                    float shakeYaw = (player.getRandom().nextFloat() - 0.5F) * 0.5F * intensity;
+                    float shakeRoll = (player.getRandom().nextFloat() - 0.5F) * 0.1F * intensity;
+
+                    event.setPitch(event.getPitch() + shakePitch);
+                    event.setYaw(event.getYaw() + shakeYaw);
+                    event.setRoll(event.getRoll() + shakeRoll);
+                    break;
+                }
+            }
+        }
+
+		if (player.hasEffect(MainEffects.STAGGER)) {
+			int amplifier = player.getEffect(MainEffects.STAGGER).getAmplifier();
+			float baseIntensity = 1.5F + (amplifier * 0.8F);
+
+			float yawShake = (float) (Math.sin(time * 0.5D) * baseIntensity * 0.8F + Math.sin(time * 1.2D) * baseIntensity * 0.4F);
+			float pitchShake = (float) (Math.cos(time * 0.6D) * baseIntensity * 2.0F + Math.cos(time * 0.9D) * baseIntensity * 1.0F);
+			float rollShake = (float) (Math.sin(time * 0.7D) * baseIntensity * 0.6F);
+
+			event.setYaw(event.getYaw() + yawShake);
+			event.setPitch(event.getPitch() + pitchShake);
+			event.setRoll(event.getRoll() + rollShake);
+		}
+
+		if (isChargingFormCache) {
+			float globalshake = isOverchargingCache ? 0.16F : 0.05F;
+
+			float sweepIntensity = 2.5F * globalshake;
+			float sweepYaw = (float) (Math.sin(time * 1.5D) * sweepIntensity);
+			float sweepPitch = (float) (Math.cos(time * 1.2D) * (sweepIntensity * 0.6F));
+
+			float shakeIntensity = (isOverchargingCache ? 1.2F : 0.2F) * globalshake;
+			float shakeYaw = (float) (Math.sin(time * 5.0D) * shakeIntensity);
+			float shakePitch = (float) (Math.cos(time * 6.0D) * shakeIntensity);
+
+			float rollIntensity = 1.5F * globalshake;
+			float tfRoll = (float) (Math.sin(time * 2.0D) * rollIntensity);
+
+			event.setYaw(event.getYaw() + sweepYaw + shakeYaw);
+			event.setPitch(event.getPitch() + sweepPitch + shakePitch);
+			event.setRoll(event.getRoll() + tfRoll);
+		}
+
+		for (var entry : KiBurstShakeState.active().entrySet()) {
+			var source = mc.level.getEntity(entry.getKey());
+			if (source == null) continue;
+			var burst = entry.getValue();
+			float reach = Math.max(0.001f, burst.radius() * 1.5f);
+			float impulse = burst.fade() * Math.max(0.0f, 1.0f - player.distanceTo(source) / reach);
+			if (impulse <= 0) continue;
+			float strength = burst.isFull() ? 2.8f : 1.2f;
+			event.setPitch(event.getPitch() + (player.getRandom().nextFloat() - 0.5f) * strength * impulse);
+			event.setYaw(event.getYaw() + (player.getRandom().nextFloat() - 0.5f) * strength * impulse);
+			event.setRoll(event.getRoll() + (player.getRandom().nextFloat() - 0.5f) * strength * 0.5f * impulse);
+		}
+	}
+
+	@SubscribeEvent
+	public static void renderStaggerOverlay(RenderGuiLayerEvent.Post event) {
+		if (VanillaGuiLayers.CROSSHAIR.equals(event.getName())) {
+			Minecraft mc = Minecraft.getInstance();
+			Player player = mc.player;
+
+			if (player != null && player.hasEffect(MainEffects.STAGGER)) {
+				int amplifier = player.getEffect(MainEffects.STAGGER).getAmplifier();
+				float blurStrength = 0.3F + (amplifier * 0.15F);
+
+				GuiGraphicsExtractor graphics = event.getGuiGraphics();
+				int width = graphics.guiWidth();
+				int height = graphics.guiHeight();
+
+
+				int alpha = (int) (blurStrength * 80);
+				int color = (alpha << 24) | 0xFFFFFF;
+
+				graphics.fill(0, 0, width, height, color);
+
+			}
+		}
+	}
+
+	@SubscribeEvent
+	public static void renderStunOverlay(RenderGuiLayerEvent.Post event) {
+		if (VanillaGuiLayers.CAMERA_OVERLAYS.equals(event.getName())) {
+			Minecraft mc = Minecraft.getInstance();
+			Player player = mc.player;
+
+			if (player != null && player.hasEffect(MainEffects.STUN)) {
+				if (isBioAndroidDrainingCache) return;
+
+				int amplifier = player.getEffect(MainEffects.STUN).getAmplifier();
+				float blurStrength = 0.3F + (amplifier * 0.15F);
+
+				GuiGraphicsExtractor graphics = event.getGuiGraphics();
+				int width = graphics.guiWidth();
+				int height = graphics.guiHeight();
+
+
+				int alpha = (int) (blurStrength * 80);
+				int color = (alpha << 24) | 0xFFFFFF;
+
+				graphics.fill(0, 0, width, height, color);
+
+			}
+		}
+	}
+}
+

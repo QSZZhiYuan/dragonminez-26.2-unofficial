@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "building",
+  "group": "dmz_planks",
+  "ingredients": [
+    "#dragonminez:namek_alog"
+  ],
+  "result": {
+    "count": 4,
+    "id": "dragonminez:namek_ajissa_planks"
+  }
+}

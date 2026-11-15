@@ -1,0 +1,174 @@
+package com.dragonminez.common.network.C2S;
+
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.network.S2C.StatsSyncS2C;
+import com.dragonminez.common.stats.skills.Skill;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsData;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.common.stats.techniques.KiAttackData;
+import com.dragonminez.common.stats.techniques.PredefinedTechniques;
+import com.dragonminez.common.stats.techniques.StrikeAttackData;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.server.level.ServerPlayer;
+import com.dragonminez.compat.network.NetworkEvent;
+
+import java.util.function.Supplier;
+
+public class UpdateSkillC2S {
+
+	public enum SkillAction {
+		TOGGLE, UPGRADE, PURCHASE
+	}
+
+	private final String skillName;
+	private final SkillAction action;
+	private final int cost;
+
+	public UpdateSkillC2S(SkillAction action, String skillName, int cost) {
+		this.skillName = skillName;
+		this.action = action;
+		this.cost = cost;
+	}
+
+	public UpdateSkillC2S(FriendlyByteBuf buf) {
+		this.skillName = buf.readUtf();
+		this.action = buf.readEnum(SkillAction.class);
+		this.cost = buf.readInt();
+	}
+
+	public void encode(FriendlyByteBuf buf) {
+		buf.writeUtf(this.skillName);
+		buf.writeEnum(this.action);
+		buf.writeInt(this.cost);
+	}
+
+	public void handle(Supplier<NetworkEvent.Context> ctx) {
+		ctx.get().enqueueWork(() -> {
+			ServerPlayer player = ctx.get().getSender();
+			if (player != null) {
+				StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+					Skill skill = data.getSkills().getSkill(skillName);
+                    if (action != SkillAction.TOGGLE) {
+                        int targetLevel = action == SkillAction.PURCHASE ? 1 : data.getSkills().getSkillLevel(skillName) + 1;
+                        var lock = com.dragonminez.common.util.FormRequisites.checkSkillLevel(data, skillName, targetLevel, false);
+                        if (lock.isLocked()) {
+                            player.sendSystemMessage(com.dragonminez.common.util.FormRequisites.describeInline(lock, false), true);
+                            return;
+                        }
+                    }
+					boolean raceAllowed = isSkillAllowedForPlayerRace(data, skillName);
+					switch (action) {
+						case TOGGLE:
+							if (skill != null && skill.getLevel() > 0) skill.setActive(!skill.isActive());
+							break;
+						case UPGRADE:
+							if (skill == null) break;
+							if (skill.getLevel() <= 0 && !raceAllowed) break;
+							boolean isStackSkill = ConfigManager.getSkillsConfig().getStackSkills().contains(skillName.toLowerCase());
+							if (isStackSkill && skill.getLevel() <= 0) break;
+							if (skill.getLevel() <= 0 && isMasterOnlyFormSkill(data, skillName)) break;
+							refreshRuntimeMaxLevel(data, skillName, skill);
+							int upgradeCost = computeTpCost(data, skillName, skill.getLevel());
+							if (!skill.isMaxLevel() && upgradeCost >= 0 && data.getResources().getTrainingPoints() >= upgradeCost && !(skillName.equals("potentialunlock") && skill.getLevel() == 10)) {
+								data.getResources().removeTrainingPoints(upgradeCost);
+								boolean wasLevelZero = skill.getLevel() == 0;
+								skill.addLevel(1);
+
+								if (wasLevelZero) unlockTechniqueIfPresent(data, skillName);
+							}
+							break;
+
+						case PURCHASE:
+							if (!raceAllowed) break;
+							boolean isFormSkillPurchase = ConfigManager.getSkillsConfig().getFormSkills().contains(skillName.toLowerCase());
+							int effectiveCost;
+							if (isFormSkillPurchase) {
+								var charConfig = ConfigManager.getRaceCharacter(data.getCharacter().getRaceName());
+								if (charConfig == null || !charConfig.hasFormSkill(skillName)) break;
+								Integer[] prices = charConfig.getFormSkillTpCosts(skillName);
+								effectiveCost = (prices.length > 0 && prices[0] != null) ? prices[0] : -1;
+							} else {
+								effectiveCost = computeTpCost(data, skillName, 0);
+							}
+							boolean notOwned = !data.getSkills().hasSkill(skillName)
+									|| (isFormSkillPurchase && data.getSkills().getSkillLevel(skillName) == 0);
+							if (notOwned && effectiveCost >= 0 && data.getResources().getTrainingPoints() >= effectiveCost) {
+								data.getResources().removeTrainingPoints(effectiveCost);
+								data.getSkills().setSkillLevel(skillName, 1);
+								Skill purchased = data.getSkills().getSkill(skillName);
+								if (purchased != null) refreshRuntimeMaxLevel(data, skillName, purchased);
+								unlockTechniqueIfPresent(data, skillName);
+							}
+							break;
+					}
+					NetworkHandler.sendToTrackingEntityAndSelf(new StatsSyncS2C(player), player);
+				});
+			}
+		});
+		ctx.get().setPacketHandled(true);
+	}
+
+	private static int computeTpCost(StatsData data, String skillName, int currentLevel) {
+		if (skillName == null || currentLevel < 0) return -1;
+		var skillsConfig = ConfigManager.getSkillsConfig();
+		if (skillsConfig.getFormSkills().contains(skillName.toLowerCase())) {
+			String raceName = data.getCharacter() != null ? data.getCharacter().getRaceName() : "";
+			var charConfig = ConfigManager.getRaceCharacter(raceName);
+			if (charConfig == null) return -1;
+			Integer[] prices = charConfig.getFormSkillTpCosts(skillName);
+			if (prices == null || currentLevel >= prices.length || prices[currentLevel] == null) return -1;
+			return Math.max(0, prices[currentLevel]);
+		}
+		var skillCosts = skillsConfig.getSkillCosts(skillName);
+		if (skillCosts == null || skillCosts.getCosts() == null) return -1;
+		java.util.List<Integer> costs = skillCosts.getCosts();
+		if (currentLevel >= costs.size() || costs.get(currentLevel) == null) return -1;
+		return Math.max(0, costs.get(currentLevel));
+	}
+
+	private static boolean isMasterOnlyFormSkill(StatsData data, String skillName) {
+		if (data == null || skillName == null) return false;
+		if (!ConfigManager.getSkillsConfig().getFormSkills().contains(skillName.toLowerCase())) return false;
+		String raceName = data.getCharacter() != null ? data.getCharacter().getRaceName() : "";
+		var charConfig = ConfigManager.getRaceCharacter(raceName);
+		return charConfig != null && charConfig.isFormSkillBuyFromMaster(skillName);
+	}
+
+	private static boolean isSkillAllowedForPlayerRace(StatsData data, String skillName) {
+		if (data == null || skillName == null || skillName.isEmpty()) return false;
+
+		String raceName = data.getCharacter() != null ? data.getCharacter().getRaceName() : "";
+		return ConfigManager.getSkillsConfig().isSkillAllowedForRace(skillName, raceName, data.getStatus().isAndroidUpgraded());
+	}
+
+	private void unlockTechniqueIfPresent(com.dragonminez.common.stats.StatsData data, String techId) {
+        var clone = PredefinedTechniques.copyOf(techId);
+        if (clone != null) data.getTechniques().unlockTechnique(clone);
+	}
+
+	private static void refreshRuntimeMaxLevel(StatsData data, String skillName, Skill skill) {
+		String normalizedSkill = skillName.toLowerCase();
+		var skillsConfig = ConfigManager.getSkillsConfig();
+
+		if (skillsConfig.getFormSkills().contains(normalizedSkill)) {
+			String raceName = data.getCharacter().getRaceName();
+			if (raceName == null || raceName.isEmpty()) return;
+
+			var charConfig = ConfigManager.getRaceCharacter(raceName);
+			int maxLevel = charConfig.getFormSkillTpCosts(normalizedSkill).length;
+			skill.setMaxLevel(maxLevel);
+			return;
+		}
+
+		int maxLevel = 0;
+		var skillCosts = skillsConfig.getSkillCosts(normalizedSkill);
+		if (skillCosts != null && skillCosts.getCosts() != null) maxLevel = skillCosts.getCosts().size();
+
+		if ("potentialunlock".equalsIgnoreCase(normalizedSkill)) maxLevel = Math.min(maxLevel, 30);
+		else maxLevel = Math.min(maxLevel, 50);
+
+		skill.setMaxLevel(maxLevel);
+	}
+}

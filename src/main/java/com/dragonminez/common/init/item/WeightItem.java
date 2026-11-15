@@ -1,0 +1,74 @@
+package com.dragonminez.common.init.item;
+
+import net.minecraft.world.item.component.TooltipDisplay;
+import net.minecraft.world.item.Item;
+
+import net.minecraft.ChatFormatting;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.network.chat.Component;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.TooltipFlag;
+import net.minecraft.world.level.Level;
+import org.jetbrains.annotations.Nullable;
+import com.geckolib.animatable.GeoItem;
+import com.geckolib.animatable.instance.AnimatableInstanceCache;
+import com.geckolib.animatable.manager.AnimatableManager;
+import com.geckolib.animation.AnimationController;
+import com.geckolib.animation.RawAnimation;
+import com.geckolib.util.GeckoLibUtil;
+import java.util.List;
+
+public class WeightItem extends DMZCuriosItem implements GeoItem {
+
+	public enum WeightType {
+		TURTLE_SHELL, WORKOUT_WEIGHTS, PICCOLO_CAPE;
+	}
+
+	private final AnimatableInstanceCache cache = GeckoLibUtil.createInstanceCache(this);
+	private final WeightType weightType;
+
+	public WeightItem(Properties properties, WeightType weightType) {
+		super(properties, CurioType.WEIGHTS);
+		this.weightType = weightType;
+	}
+
+	public static int getWeight(ItemStack stack) {
+		if (stack.isEmpty()) return 0;
+		var custom = stack.getOrDefault(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.EMPTY); return custom.copyTag().getIntOr("WeightValue", 0);
+	}
+
+	public static void setWeight(ItemStack stack, int weight) {
+		net.minecraft.world.item.component.CustomData.update(net.minecraft.core.component.DataComponents.CUSTOM_DATA, stack, tag -> tag.putInt("WeightValue", weight));
+	}
+
+	@Override
+	public void appendHoverText(ItemStack stack, Item.TooltipContext context, TooltipDisplay display, java.util.function.Consumer<Component> tooltip, TooltipFlag flag) {
+		super.appendHoverText(stack, context, display, tooltip, flag);
+		int weight = getWeight(stack);
+		if (weight > 0) {
+			tooltip.accept(Component.translatable("item.dragonminez.weight.tooltip", weight).withStyle(ChatFormatting.GOLD));
+		}
+	}
+
+	@Override
+	public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
+		controllers.add(new AnimationController<>("controller", 5, event -> {
+			if (event.isMoving()) {
+				return event.setAndContinue(RawAnimation.begin().thenLoop("walk"));
+			} else {
+				return event.setAndContinue(RawAnimation.begin().thenLoop("idle"));
+			}
+		}));
+	}
+
+	@Override
+	public AnimatableInstanceCache getAnimatableInstanceCache() {
+		return cache;
+	}
+
+	@java.lang.SuppressWarnings("all")
+	public WeightType getWeightType() {
+		return this.weightType;
+	}
+}
+

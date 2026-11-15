@@ -1,0 +1,219 @@
+package com.dragonminez.common.init.entities.sagas;
+
+import net.minecraft.server.level.ServerLevel;
+
+import com.dragonminez.common.init.entities.IBattlePower;
+import com.dragonminez.common.init.entities.sagas.helper.DBSagasAnimations;
+import net.minecraft.commands.arguments.EntityAnchorArgument;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.EntityDataSerializers;
+import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.monster.Monster;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import com.geckolib.animatable.GeoAnimatable;
+import com.geckolib.animatable.manager.AnimatableManager;
+import com.geckolib.animation.AnimationController;
+import com.geckolib.animation.state.AnimationTest;
+import com.geckolib.animation.RawAnimation;
+import com.geckolib.animation.object.PlayState;
+
+import java.util.List;
+
+public class SagaSaibamanEntity extends DBSagasEntity{
+
+    private static final EntityDataAccessor<Boolean> IS_EXPLODING = SynchedEntityData.defineId(SagaSaibamanEntity.class, EntityDataSerializers.BOOLEAN);
+
+    private boolean isAttacking = false;
+    private int fuseTimer = 0;
+    private int explodeTimer = 3;
+    private boolean isAttached = false;
+
+    private boolean hasCheckedExplosionChance = false;
+
+    public SagaSaibamanEntity(EntityType<? extends Monster> pEntityType, Level pLevel) {
+        super(pEntityType, pLevel);
+		if (this instanceof IBattlePower bp) {
+			bp.setBattlePower(1200);
+		}
+
+        this.setCanFly(false);
+    }
+
+    public static AttributeSupplier.Builder createAttributes() {
+        return Monster.createMonsterAttributes()
+                .add(Attributes.MAX_HEALTH, 80.0D)
+                .add(Attributes.MOVEMENT_SPEED, 0.20D)
+                .add(Attributes.ATTACK_DAMAGE, 15.0D)
+                .add(Attributes.KNOCKBACK_RESISTANCE, 0.6D);
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+
+        if (!this.isAlive()) return;
+
+        float healthThreshold = this.getMaxHealth() * 0.25f;
+
+        if (this.getHealth() <= healthThreshold && !this.hasCheckedExplosionChance && !isExploding()) {
+            this.hasCheckedExplosionChance = true;
+
+            if (this.random.nextFloat() < 0.05F) {
+                this.setExploding(true);
+            }
+        }
+
+        if (isExploding()) {
+            LivingEntity target = this.getTarget();
+
+            if (target == null) {
+                target = this.level().getNearestPlayer(this, 10.0D);
+                if (target != null) {
+                    this.setTarget(target);
+                }
+            }
+
+            if (target != null) {
+                if (this.isAttached || this.distanceTo(target) <= 2.0D) {
+                    this.isAttached = true;
+
+                    Vec3 lookAngle = target.getLookAngle();
+                    double behindX = target.getX() - (lookAngle.x * 0.8D);
+                    double behindZ = target.getZ() - (lookAngle.z * 0.8D);
+
+                    this.setPos(behindX, target.getY(), behindZ);
+                    this.lookAt(EntityAnchorArgument.Anchor.EYES, target.getEyePosition());
+                    this.setYBodyRot(this.getYRot());
+                    this.setYHeadRot(this.getYRot());
+
+                    this.setDeltaMovement(0, 0, 0);
+                    this.getNavigation().stop();
+                    this.setAggressive(false);
+
+                    fuseTimer++;
+
+                    if (fuseTimer == 1 || fuseTimer % 15 == 0) {
+                        this.playSound(net.minecraft.sounds.SoundEvents.CREEPER_PRIMED, 1.0F, 0.5F + (fuseTimer / 60.0F));
+                    }
+
+                    if (fuseTimer >= explodeTimer * 20) {
+                        explode();
+                    }
+                } else {
+                    this.getNavigation().moveTo(target, 1.5D);
+                }
+            }
+        }
+    }
+
+    @Override
+    public void registerControllers(AnimatableManager.ControllerRegistrar controllers) {
+        controllers.add(new AnimationController<>("base_controller", 5, this::walkPredicate));
+        controllers.add(new AnimationController<>("attack_controller", 0, this::attackPredicate));
+        controllers.add(new AnimationController<>("explode_controller", 0, this::explodePredicate));
+    }
+
+    private <T extends GeoAnimatable> PlayState explodePredicate(AnimationTest<T> event) {
+        if (this.isExploding()) {
+            event.setAnimation(RawAnimation.begin().thenPlay("explode"));
+            return PlayState.CONTINUE;
+        }
+        return PlayState.STOP;
+    }
+
+    private <T extends GeoAnimatable> PlayState walkPredicate(AnimationTest<T> event) {
+        DBSagasEntity entity = (DBSagasEntity) event.animatable();
+        if (event.isMoving()) {
+            if (entity.isAggressive() || entity.getTarget() != null) {
+                event.setAnimation(DBSagasAnimations.ANIM_RUN);
+            } else {
+                event.setAnimation(DBSagasAnimations.ANIM_WALK);
+            }
+            return PlayState.CONTINUE;
+        }
+        event.setAnimation(DBSagasAnimations.ANIM_IDLE);
+        return PlayState.CONTINUE;
+    }
+
+    private <T extends GeoAnimatable> PlayState attackPredicate(AnimationTest<T> event) {
+        DBSagasEntity entity = (DBSagasEntity) event.animatable();
+        if (entity.swingTime > 0 && !isAttacking) {
+            isAttacking = true;
+            event.controller().reset();
+            event.setAnimation(RawAnimation.begin().thenPlay("attack"));
+            return PlayState.CONTINUE;
+        }
+        if (isAttacking) {
+            if (event.controller().hasAnimationFinished()) {
+                isAttacking = false;
+                return PlayState.STOP;
+            }
+            return PlayState.CONTINUE;
+        }
+        return PlayState.STOP;
+    }
+
+	private void explode() {
+		if (!this.level().isClientSide()) {
+			float radius = 4.0F;
+
+			double baseDamage = this.getAttributeValue(Attributes.ATTACK_DAMAGE);
+			float finalDamage = (float) (baseDamage * 3.0);
+
+			DamageSource damageSource = this.level().damageSources().explosion(this, this);
+
+			AABB area = this.getBoundingBox().inflate(radius);
+			List<LivingEntity> entities = this.level().getEntitiesOfClass(LivingEntity.class, area);
+
+			for (LivingEntity target : entities) {
+				if (target != this && this.distanceToSqr(target) <= radius * radius) {
+					target.hurtServer((ServerLevel) this.level(), damageSource, finalDamage);
+				}
+			}
+
+			this.level().explode(this, this.getX(), this.getY(), this.getZ(), radius, Level.ExplosionInteraction.MOB);
+
+			this.discard();
+		}
+	}
+
+    @Override
+    public boolean doHurtTarget(ServerLevel level, Entity pEntity) {
+        if (this.isExploding()) {
+            return false;
+        }
+        return super.doHurtTarget(level, pEntity);
+    }
+
+    @Override
+    public boolean canAttack(LivingEntity pTarget) {
+        if (this.isExploding()) {
+            return false;
+        }
+        return super.canAttack(pTarget);
+    }
+
+    @Override
+    protected void defineSynchedData(net.minecraft.network.syncher.SynchedEntityData.Builder builder) {
+        super.defineSynchedData(builder);
+        builder.define(IS_EXPLODING, false);
+    }
+
+    public void setExploding(boolean exploding) {
+        this.entityData.set(IS_EXPLODING, exploding);
+    }
+
+    public boolean isExploding() {
+        return this.entityData.get(IS_EXPLODING);
+    }
+}
+
+

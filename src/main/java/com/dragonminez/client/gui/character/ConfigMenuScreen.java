@@ -1,0 +1,587 @@
+package com.dragonminez.client.gui.character;
+
+import net.minecraft.client.Minecraft;
+import com.dragonminez.Reference;
+import com.dragonminez.client.crowdin.CrowdinManager;
+import com.dragonminez.client.gui.buttons.CustomTextureButton;
+import com.dragonminez.client.gui.buttons.SwitchButton;
+import com.dragonminez.client.gui.buttons.TexturedTextButton;
+import com.dragonminez.client.gui.character.util.BaseMenuScreen;
+import com.dragonminez.client.gui.config.OverShoulderCameraScreen;
+import com.dragonminez.client.util.ScrollbarState;
+import com.dragonminez.client.util.TextUtil;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.config.GeneralUserConfig;
+import com.dragonminez.common.init.MainSounds;
+import com.dragonminez.common.network.C2S.DynamicGrowthToggleC2S;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.common.stats.extras.DynamicGrowthStat;
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.ChatFormatting;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.entity.LivingEntity;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.api.distmarker.OnlyIn;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.Consumer;
+
+@OnlyIn(Dist.CLIENT)
+public class ConfigMenuScreen extends BaseMenuScreen {
+
+	private static final Identifier MENU_BIG = Identifier.fromNamespaceAndPath(Reference.MOD_ID,
+			"textures/gui/menu/menubig.png");
+	private static final Identifier STAT_BUTTONS = Identifier.fromNamespaceAndPath(Reference.MOD_ID,
+			"textures/gui/buttons/characterbuttons.png");
+
+	private static final int CONFIG_ITEM_HEIGHT = 20;
+	private static final int MAX_VISIBLE_CONFIGS = 7;
+
+	private int tickCount = 0;
+	private int scrollOffset = 0;
+	private int maxScroll = 0;
+	private final ScrollbarState scrollBar = new ScrollbarState();
+	private int holdTicks = 0;
+	private int heldConfigIndex = -1;
+	private int heldDelta = 0;
+
+	private GeneralUserConfig userConfig;
+	private final List<ConfigOption> configOptions = new ArrayList<>();
+	private final List<CustomTextureButton> decreaseButtons = new ArrayList<>();
+	private final List<CustomTextureButton> increaseButtons = new ArrayList<>();
+	private final List<SwitchButton> switchButtons = new ArrayList<>();
+	private final List<Button> actionButtons = new ArrayList<>();
+
+	public ConfigMenuScreen() {
+		super(Component.translatable("gui.dragonminez.config.title"));
+	}
+
+	@Override
+	protected void init() {
+		super.init();
+		loadConfig();
+		initializeConfigOptions();
+		initConfigButtons();
+		updateConfigsList();
+	}
+
+	private void loadConfig() {
+		userConfig = ConfigManager.getUserConfig();
+	}
+
+	private void initializeConfigOptions() {
+		configOptions.clear();
+		configOptions.add(new ConfigOption("config.hudEditor",
+				() -> this.minecraft.gui.setScreen(new com.dragonminez.client.gui.config.HudEditorScreen(this))));
+
+		configOptions.add(new ConfigOption("config.impactFramesEnabled",
+				ConfigType.BOOLEAN, userConfig.isImpactFramesEnabled() ? 1 : 0, 0, 1,
+				v -> userConfig.setImpactFramesEnabled(v > 0)));
+
+		configOptions.add(new ConfigOption("config.taiyokenInvertPalette",
+				ConfigType.BOOLEAN, userConfig.getTaiyokenInvertPalette() ? 1 : 0, 0, 1,
+				v -> userConfig.setTaiyokenInvertPalette(v > 0)));
+
+		configOptions.add(new ConfigOption("config.transformationOutlines",
+				ConfigType.BOOLEAN, userConfig.getTransformationOutlines() ? 1 : 0, 0, 1,
+				v -> userConfig.setTransformationOutlines(v > 0)));
+
+		configOptions.add(new ConfigOption("config.showAccumulativeDamage",
+				ConfigType.BOOLEAN, userConfig.getShowAccumulativeDamage() ? 1 : 0, 0, 1,
+				v -> userConfig.setShowAccumulativeDamage(v > 0)));
+
+		configOptions.add(new ConfigOption("config.techniqueHotbarRightSide",
+				ConfigType.BOOLEAN, userConfig.getTechniqueHotbarRightSide() ? 1 : 0, 0, 1,
+				v -> userConfig.setTechniqueHotbarRightSide(v > 0)));
+
+		configOptions.add(new ConfigOption("config.alwaysVisibleHudValues",
+				ConfigType.BOOLEAN, userConfig.getAlwaysVisibleHudValues() ? 1 : 0, 0, 1,
+				v -> userConfig.setAlwaysVisibleHudValues(v > 0)));
+
+		configOptions.add(new ConfigOption("config.hideHudNumbers",
+				ConfigType.BOOLEAN, userConfig.getHideHudNumbers() ? 1 : 0, 0, 1,
+				v -> userConfig.setHideHudNumbers(v > 0)));
+
+		configOptions.add(new ConfigOption("config.advancedDescription",
+				ConfigType.BOOLEAN, userConfig.getAdvancedDescription() ? 1 : 0, 0, 1,
+				v -> userConfig.setAdvancedDescription(v > 0)));
+
+		configOptions.add(new ConfigOption("config.advancedDescriptionPercentage",
+				ConfigType.BOOLEAN, userConfig.getAdvancedDescriptionPercentage() ? 1 : 0, 0, 1,
+				v -> userConfig.setAdvancedDescriptionPercentage(v > 0)));
+
+		configOptions.add(new ConfigOption("config.hexagonStatsDisplay",
+				ConfigType.BOOLEAN, userConfig.getHexagonStatsDisplay() ? 1 : 0, 0, 1,
+				v -> userConfig.setHexagonStatsDisplay(v > 0)));
+
+		configOptions.add(new ConfigOption("config.menuScaleMultiplier",
+				ConfigType.FLOAT, userConfig.getMenuScaleMultiplier(), 0.75f, 2.5f,
+				v -> userConfig.setMenuScaleMultiplier(v)));
+
+		configOptions.add(new ConfigOption("config.utilityMenuScaleMultiplier",
+				ConfigType.FLOAT, userConfig.getUtilityMenuScaleMultiplier(), 0.5f, 2.5f,
+				v -> userConfig.setUtilityMenuScaleMultiplier(v)));
+
+		configOptions.add(new ConfigOption("config.cameraMovementDuringFlight",
+				ConfigType.BOOLEAN, userConfig.getCameraMovementDuringFlight() ? 1 : 0, 0, 1,
+				v -> userConfig.setCameraMovementDuringFlight(v > 0)));
+
+		configOptions.add(new ConfigOption("config.liveCrowdinTranslations",
+				ConfigType.BOOLEAN, userConfig.getLiveCrowdinTranslations() ? 1 : 0, 0, 1,
+				v -> userConfig.setLiveCrowdinTranslations(v > 0)));
+
+
+        configOptions.add(new ConfigOption("config.aura3DPersonal", ConfigType.BOOLEAN,
+                Boolean.TRUE.equals(userConfig.getAura3DPersonal()) ? 1 : 0, 0, 1,
+                v -> { userConfig.setAura3DPersonal(v > 0); com.dragonminez.client.render.effects.AuraModeState.pushLocalPreference(); }));
+        configOptions.add(new ConfigOption("config.aura3DStyle", ConfigType.INT,
+                "sparking".equalsIgnoreCase(userConfig.getAura3DStyle()) ? 1 : "god".equalsIgnoreCase(userConfig.getAura3DStyle()) ? 2 : 0, 0, 2,
+                v -> { userConfig.setAura3DStyle(v.intValue() == 1 ? "sparking" : v.intValue() == 2 ? "god" : "smooth"); com.dragonminez.client.render.effects.AuraModeState.pushLocalPreference(); }));
+		initializeDynamicGrowthOptions();
+
+		configOptions.add(new ConfigOption("config.overShoulderCamera",
+				() -> this.minecraft.gui.setScreen(new OverShoulderCameraScreen(this))));
+	}
+
+	private void initializeDynamicGrowthOptions() {
+		if (this.minecraft == null || this.minecraft.player == null) return;
+		if (!ConfigManager.getServerConfig().getDynamicGrowth().isEnabled()) return;
+
+		StatsProvider.get(StatsCapability.INSTANCE, this.minecraft.player).ifPresent(data -> {
+			for (DynamicGrowthStat stat : DynamicGrowthStat.values()) {
+				configOptions.add(new ConfigOption("config.dynamicGrowthFor" + stat.key(),
+						ConfigType.BOOLEAN, data.getDynamicGrowth().isGrowthEnabled(stat) ? 1 : 0, 0, 1,
+						v -> {
+							boolean enabled = v > 0;
+							data.getDynamicGrowth().setGrowthEnabled(stat, enabled);
+							NetworkHandler.sendToServer(new DynamicGrowthToggleC2S(stat.key(), enabled));
+						}));
+			}
+		});
+	}
+
+	private void initConfigButtons() {
+		clearConfigButtons();
+		LivingEntity player = this.minecraft.player;
+
+		int rightPanelX = getRightPanelX() - 5;
+		int centerY = getUiHeight() / 2;
+		int rightPanelY = centerY - 105;
+		int startY = rightPanelY + 35;
+		int visibleStart = scrollOffset;
+		int visibleEnd = Math.min(visibleStart + MAX_VISIBLE_CONFIGS, configOptions.size());
+
+		for (int i = visibleStart; i < visibleEnd; i++) {
+			ConfigOption option = configOptions.get(i);
+			int itemY = startY + ((i - visibleStart) * CONFIG_ITEM_HEIGHT);
+			final int index = i;
+
+			if (option.type == ConfigType.BOOLEAN) {
+				boolean isOn = option.value > 0;
+				int switchX = rightPanelX + 65;
+				int switchY = itemY + 3;
+
+				SwitchButton switchBtn = new SwitchButton(switchX, switchY, isOn, Component.empty(), button -> {
+					modifyConfigValue(index, 1);
+					((SwitchButton) button).toggle();
+					player.playSound(((SwitchButton) button).isOn() ? MainSounds.SWITCH_ON.get() : MainSounds.SWITCH_OFF.get());
+				});
+				switchButtons.add(switchBtn);
+				this.addRenderableWidget(switchBtn);
+
+			} else if (option.type == ConfigType.ACTION) {
+				TexturedTextButton actionBtn = new TexturedTextButton.Builder()
+						.position(rightPanelX + 45, itemY)
+						.size(74, 20)
+						.texture(STAT_BUTTONS)
+						.textureCoords(0, 28, 0, 48)
+						.textureSize(74, 20)
+						.message(tr("gui.dragonminez.config.open"))
+						.onPress(b -> option.action.run())
+						.build();
+				actionButtons.add(actionBtn);
+				this.addRenderableWidget(actionBtn);
+
+			} else {
+				CustomTextureButton decreaseBtn = new CustomTextureButton.Builder()
+						.position(rightPanelX + 25, itemY + 3)
+						.size(14, 11)
+						.texture(STAT_BUTTONS)
+						.textureCoords(142, 0, 142, 10)
+						.textureSize(10, 10)
+						.onPress(button -> {
+							modifyConfigValue(index, -1);
+							heldConfigIndex = index;
+							heldDelta = -1;
+							holdTicks = 0;
+						})
+						.build();
+				decreaseButtons.add(decreaseBtn);
+				this.addRenderableWidget(decreaseBtn);
+
+				CustomTextureButton increaseBtn = new CustomTextureButton.Builder()
+						.position(rightPanelX + 108, itemY + 3)
+						.size(14, 11)
+						.texture(STAT_BUTTONS)
+						.textureCoords(0, 0, 0, 10)
+						.textureSize(10, 10)
+						.onPress(button -> {
+							modifyConfigValue(index, 1);
+							heldConfigIndex = index;
+							heldDelta = 1;
+							holdTicks = 0;
+						})
+						.build();
+				increaseButtons.add(increaseBtn);
+				this.addRenderableWidget(increaseBtn);
+			}
+		}
+	}
+
+	private void clearConfigButtons() {
+		for (CustomTextureButton btn : decreaseButtons) this.removeWidget(btn);
+		for (CustomTextureButton btn : increaseButtons) this.removeWidget(btn);
+		for (SwitchButton btn : switchButtons) this.removeWidget(btn);
+		for (Button btn : actionButtons) this.removeWidget(btn);
+		decreaseButtons.clear();
+		increaseButtons.clear();
+		switchButtons.clear();
+		actionButtons.clear();
+	}
+
+	@Override
+	public void tick() {
+		super.tick();
+		tickCount++;
+
+		if (heldConfigIndex != -1) {
+			holdTicks++;
+			if (holdTicks > 10 && holdTicks % 2 == 0) {
+				modifyConfigValue(heldConfigIndex, heldDelta);
+			}
+		}
+	}
+
+	private void updateConfigsList() {
+		maxScroll = Math.max(0, configOptions.size() - MAX_VISIBLE_CONFIGS);
+	}
+
+
+	/**
+	 * 26.2: Screen#extractRenderStateWithTooltipAndSubtitles is final and already calls
+	 * extractBackground once per frame, so calling it again from extractRenderState made
+	 * the blur request fire twice and threw
+	 *   IllegalStateException: Can only blur once per frame
+	 * The guard DMZ wanted (skip the backdrop during the open/close transition) belongs
+	 * here instead, where vanilla still calls it exactly once.
+	 */
+	@Override
+	public void extractBackground(net.minecraft.client.gui.GuiGraphicsExtractor graphics,
+			int mouseX, int mouseY, float partialTick) {
+		if (isNotAnimating()) {
+			super.extractBackground(graphics, mouseX, mouseY, partialTick);
+		}
+	}
+	@Override
+	public void extractRenderState(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float partialTick) {
+
+		int uiMouseX = (int) Math.round(toUiX(mouseX));
+		int uiMouseY = (int) Math.round(toUiY(mouseY));
+
+		beginUiScale(graphics);
+		applyZoom(graphics, partialTick);
+
+		int leftOffset = getLeftPanelSwitchOffset(partialTick);
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(leftOffset, 0);
+		renderLeftPanel(graphics, uiMouseX - leftOffset, uiMouseY);
+		graphics.pose().popMatrix();
+
+		int rightOffset = getRightPanelSwitchOffset(partialTick);
+		updateRightPanelButtonOffsets(rightOffset);
+		graphics.pose().pushMatrix();
+		graphics.pose().translate(rightOffset, 0);
+		renderRightPanel(graphics, uiMouseX - rightOffset, uiMouseY);
+		graphics.pose().popMatrix();
+
+		super.extractRenderState(graphics, uiMouseX, uiMouseY, partialTick);
+		endUiScale(graphics);
+	}
+
+	private void updateRightPanelButtonOffsets(int rightOffset) {
+		int rightPanelX = getRightPanelX() - 5;
+		int decreaseX = rightPanelX + 25 + rightOffset;
+		int increaseX = rightPanelX + 108 + rightOffset;
+		int switchX = rightPanelX + 65 + rightOffset;
+
+		for (CustomTextureButton btn : decreaseButtons) {
+			btn.setX(decreaseX);
+		}
+		for (CustomTextureButton btn : increaseButtons) {
+			btn.setX(increaseX);
+		}
+		for (SwitchButton btn : switchButtons) {
+			btn.setX(switchX);
+		}
+		for (Button btn : actionButtons) {
+			btn.setX(decreaseX);
+		}
+	}
+
+	private int getLeftPanelX() {
+		return getUiWidth() / 2 - 143;
+	}
+
+	private int getRightPanelX() {
+		return getUiWidth() / 2 + 2;
+	}
+
+	private void renderLeftPanel(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
+		int leftPanelX = getLeftPanelX();
+		int centerY = getUiHeight() / 2;
+		int leftPanelY = centerY - 105;
+
+		graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, leftPanelX, centerY - 105, 0, 0, 141, 213, 256, 256);
+		graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, leftPanelX + 17, centerY - 95, 142, 22, 107, 21, 256, 256);
+
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.config.options").withStyle(ChatFormatting.BOLD),
+				leftPanelX + 70, leftPanelY + 17, 0xFFFFD700);
+
+		renderConfigsList(graphics, leftPanelX, leftPanelY, mouseX, mouseY);
+	}
+
+	private void renderConfigsList(GuiGraphicsExtractor graphics, int panelX, int panelY, int mouseX, int mouseY) {
+		int startY = panelY + 35;
+		int visibleStart = scrollOffset;
+		int visibleEnd = Math.min(visibleStart + MAX_VISIBLE_CONFIGS, configOptions.size());
+
+		graphics.enableScissor(
+				toScissorCoord(panelX + 5),
+				toScissorCoord(startY),
+				toScissorCoord(panelX + 144),
+				toScissorCoord(startY + (MAX_VISIBLE_CONFIGS * CONFIG_ITEM_HEIGHT))
+		);
+
+		graphics.pose().pushMatrix();
+		graphics.pose().scale(0.75f, 0.75f);
+
+		for (int i = visibleStart; i < visibleEnd; i++) {
+			ConfigOption option = configOptions.get(i);
+			int itemY = startY + ((i - visibleStart) * CONFIG_ITEM_HEIGHT);
+
+			String displayName = tr("gui.dragonminez." + option.key).getString();
+
+			TextUtil.drawStringWithBorder(graphics, this.font, txt(displayName),
+					(int) ((panelX + 15) / 0.75f), (int) (itemY / 0.75f) + 6, 0xFFFFFFFF);
+		}
+
+		graphics.pose().popMatrix();
+		graphics.disableScissor();
+
+		scrollBar.update(panelX + 128, 3, startY, MAX_VISIBLE_CONFIGS * CONFIG_ITEM_HEIGHT, maxScroll);
+		if (maxScroll > 0) {
+			int scrollBarX = panelX + 128;
+			int scrollBarHeight = MAX_VISIBLE_CONFIGS * CONFIG_ITEM_HEIGHT;
+			int totalItems = configOptions.size();
+
+			graphics.fill(scrollBarX, startY, scrollBarX + 3, startY + scrollBarHeight, 0xFF333333);
+
+			float scrollPercent = (float) scrollOffset / maxScroll;
+			float visiblePercent = (float) MAX_VISIBLE_CONFIGS / totalItems;
+			int indicatorHeight = Math.max(20, (int) (scrollBarHeight * visiblePercent));
+			int indicatorY = startY + (int) ((scrollBarHeight - indicatorHeight) * scrollPercent);
+
+			graphics.fill(scrollBarX, indicatorY, scrollBarX + 3, indicatorY + indicatorHeight, 0xFFAAAAAA);
+		}
+	}
+
+	private void renderRightPanel(GuiGraphicsExtractor graphics, int mouseX, int mouseY) {
+		int rightPanelX = getRightPanelX();
+		int centerY = getUiHeight() / 2;
+		int rightPanelY = centerY - 105;
+
+		graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, rightPanelX, centerY - 105, 0, 0, 141, 213, 256, 256);
+		graphics.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, MENU_BIG, rightPanelX + 17, centerY - 95, 142, 22, 107, 21, 256, 256);
+
+		TextUtil.drawCenteredStringWithBorder(graphics, this.font, tr("gui.dragonminez.config.values").withStyle(ChatFormatting.BOLD),
+				rightPanelX + 70, rightPanelY + 17, 0xFFFFD700);
+
+		renderConfigValues(graphics, rightPanelX, rightPanelY);
+	}
+
+	private void renderConfigValues(GuiGraphicsExtractor graphics, int panelX, int panelY) {
+		int startY = panelY + 35;
+		int visibleStart = scrollOffset;
+		int visibleEnd = Math.min(visibleStart + MAX_VISIBLE_CONFIGS, configOptions.size());
+
+		for (int i = visibleStart; i < visibleEnd; i++) {
+			ConfigOption option = configOptions.get(i);
+			int itemY = startY + ((i - visibleStart) * CONFIG_ITEM_HEIGHT);
+
+			if (option.type != ConfigType.BOOLEAN && option.type != ConfigType.ACTION) {
+				String valueText;
+				if (option.type == ConfigType.FLOAT) {
+					valueText = String.format("%.2f", option.value);
+				} else {
+					valueText = String.valueOf((int) option.value);
+				}
+
+				graphics.pose().pushMatrix();
+				graphics.pose().scale(0.75f, 0.75f);
+				TextUtil.drawCenteredStringWithBorder(graphics, this.font, txt(valueText),
+						(int) ((panelX + 69) / 0.75f), (int) ((itemY + 5) / 0.75f), 0xFFFFFFFF);
+				graphics.pose().popMatrix();
+			}
+		}
+	}
+
+	private void modifyConfigValue(int index, int delta) {
+		if (index < 0 || index >= configOptions.size()) return;
+
+		ConfigOption option = configOptions.get(index);
+		boolean isShiftDown = Minecraft.getInstance().hasShiftDown();
+
+		if (option.type == ConfigType.BOOLEAN) {
+			option.value = option.value > 0 ? 0 : 1;
+		} else if (option.type == ConfigType.INT) {
+			int step = isShiftDown ? 5 : 1;
+			option.value = Math.max(option.min, Math.min(option.max, option.value + (delta * step)));
+		} else if (option.type == ConfigType.FLOAT) {
+			float step;
+			if ("config.menuScaleMultiplier".equals(option.key) || "config.xenoverseHudScale".equals(option.key)
+					|| "config.utilityMenuScaleMultiplier".equals(option.key)) {
+				step = isShiftDown ? 0.25f : 0.05f;
+			} else {
+				step = isShiftDown ? 1.0f : 0.1f;
+			}
+			option.value = Math.max(option.min, Math.min(option.max, option.value + (delta * step)));
+			option.value = Math.round(option.value * 100.0f) / 100.0f;
+		}
+
+		option.setter.accept(option.value);
+
+		if ("config.menuScaleMultiplier".equals(option.key)) {
+			rebuildWidgetsWithoutTransition();
+		}
+
+		if ("config.liveCrowdinTranslations".equals(option.key) && this.minecraft != null) {
+			if (userConfig.getLiveCrowdinTranslations()) {
+				CrowdinManager.fetchLanguage(this.minecraft.options.languageCode);
+			} else {
+				CrowdinManager.clearCache();
+			}
+			this.minecraft.reloadResourcePacks();
+		}
+	}
+
+	@Override
+	public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+		double uiMouseX = toUiX(mouseX);
+		double uiMouseY = toUiY(mouseY);
+		int leftPanelX = getLeftPanelX();
+		int rightPanelX = getRightPanelX();
+		int centerY = getUiHeight() / 2;
+		int panelY = centerY - 105;
+
+		boolean overLeft = uiMouseX >= leftPanelX && uiMouseX <= leftPanelX + 148;
+		boolean overRight = uiMouseX >= rightPanelX && uiMouseX <= rightPanelX + 148;
+
+		if ((overLeft || overRight) &&
+				uiMouseY >= panelY + 40 && uiMouseY <= panelY + 219) {
+
+			int scrollAmount = (int) Math.signum(scrollY);
+			scrollOffset = Math.max(0, Math.min(maxScroll, scrollOffset - scrollAmount));
+			initConfigButtons();
+			return true;
+		}
+		return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+	}
+
+	@Override
+	public boolean mouseClicked(net.minecraft.client.input.MouseButtonEvent event, boolean doubleClick) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		double uiMouseX = toUiX(mouseX);
+		double uiMouseY = toUiY(mouseY);
+
+		if (scrollBar.tryStartDrag(uiMouseX, uiMouseY)) {
+			scrollOffset = Math.round(scrollBar.scrollFor(uiMouseY));
+			initConfigButtons();
+			return true;
+		}
+		return super.mouseClicked(event, doubleClick);
+	}
+
+	@Override
+	public boolean mouseDragged(net.minecraft.client.input.MouseButtonEvent event, double dragX, double dragY) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		if (scrollBar.isDragging()) {
+			scrollOffset = Math.round(scrollBar.scrollFor(toUiY(mouseY)));
+			initConfigButtons();
+			return true;
+		}
+		return super.mouseDragged(event, dragX, dragY);
+	}
+
+	@Override
+	public boolean mouseReleased(net.minecraft.client.input.MouseButtonEvent event) {
+        double mouseX = event.x();
+        double mouseY = event.y();
+        int button = event.button();
+		heldConfigIndex = -1;
+
+		if (scrollBar.isDragging()) {
+			scrollBar.stopDrag();
+			return true;
+		}
+		return super.mouseReleased(event);
+	}
+
+	@Override
+	public void removed() {
+		if (this.minecraft != null) {
+			ConfigManager.saveGeneralUserConfig();
+		}
+		super.removed();
+	}
+
+	private enum ConfigType {
+		INT, FLOAT, BOOLEAN, ACTION
+	}
+
+	private static class ConfigOption {
+		String key;
+		ConfigType type;
+		float value;
+		float min;
+		float max;
+		Consumer<Float> setter;
+		Runnable action;
+
+		ConfigOption(String key, ConfigType type, float value, float min, float max, java.util.function.Consumer<Float> setter) {
+			this.key = key;
+			this.type = type;
+			this.value = value;
+			this.min = min;
+			this.max = max;
+			this.setter = setter;
+		}
+
+		ConfigOption(String key, Runnable action) {
+			this.key = key;
+			this.type = ConfigType.ACTION;
+			this.action = action;
+		}
+	}
+}
+

@@ -1,0 +1,213 @@
+package com.dragonminez.client.events;
+
+import com.dragonminez.Reference;
+import com.dragonminez.common.dragonball.DragonRadarDefinition;
+import com.dragonminez.common.init.MainItems;
+import com.dragonminez.common.init.item.DragonRadarItem;
+import com.dragonminez.server.world.dimension.NamekDimension;
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.core.BlockPos;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
+import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
+import org.joml.Quaternionf;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@EventBusSubscriber(modid = Reference.MOD_ID, value = Dist.CLIENT)
+public class RadarRenderEvent {
+	private static final Identifier RADAR_TEXTURE = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/gui/radar.png");
+
+	private static List<BlockPos> clientEarthPositions = new ArrayList<>();
+	private static List<BlockPos> clientNamekPositions = new ArrayList<>();
+	private static Map<String, List<BlockPos>> clientPositionsBySet = new HashMap<>();
+
+
+	@SubscribeEvent
+	public static void onClientDisconnect(ClientPlayerNetworkEvent.LoggingOut event) {
+		clientEarthPositions = new ArrayList<>();
+		clientNamekPositions = new ArrayList<>();
+		clientPositionsBySet = new HashMap<>();
+	}
+
+	public static void updateRadarData(List<BlockPos> earth, List<BlockPos> namek, Map<String, List<BlockPos>> positionsBySet) {
+		clientEarthPositions = earth;
+		clientNamekPositions = namek;
+		clientPositionsBySet = new HashMap<>();
+		if (positionsBySet != null) positionsBySet.forEach((setId, positions) -> clientPositionsBySet.put(setId, new ArrayList<>(positions)));
+		clientPositionsBySet.put("earth", earth);
+		clientPositionsBySet.put("namek", namek);
+	}
+
+	@SubscribeEvent
+	public static void onRenderGameOverlay(RenderGuiLayerEvent.Pre event) {
+		if (!event.getName().getPath().equals("hotbar")) return;
+
+		Minecraft mc = Minecraft.getInstance();
+		if (mc.isPaused() || mc.player == null) return;
+
+		Player player = mc.player;
+		Level level = player.level();
+
+		boolean isOverworld = level.dimension().equals(Level.OVERWORLD);
+		boolean isNamek = level.dimension().equals(NamekDimension.NAMEK_KEY);
+
+		if (!isOverworld && !isNamek) return;
+
+		ItemStack mainHand = player.getMainHandItem();
+		ItemStack offHand = player.getOffhandItem();
+
+		var earthRadarItem = MainItems.DBALL_RADAR_ITEM.get();
+		var namekRadarItem = MainItems.NAMEKDBALL_RADAR_ITEM.get();
+		var fusedRadarItem = MainItems.FUSED_DBALL_RADAR_ITEM.get();
+
+		List<BlockPos> targets = null;
+		int range = 75;
+		boolean isMainHand = false;
+
+		if (isOverworld && mainHand.getItem() == earthRadarItem) {
+			targets = clientEarthPositions;
+			range = getRadarRange(mainHand);
+			isMainHand = true;
+		} else if (isNamek && mainHand.getItem() == namekRadarItem) {
+			targets = clientNamekPositions;
+			range = getRadarRange(mainHand);
+			isMainHand = true;
+		}
+		else if (isOverworld && offHand.getItem() == earthRadarItem) {
+			targets = clientEarthPositions;
+			range = getRadarRange(offHand);
+			isMainHand = false;
+		} else if (isNamek && offHand.getItem() == namekRadarItem) {
+			targets = clientNamekPositions;
+			range = getRadarRange(offHand);
+			isMainHand = false;
+		}
+
+		// Fused (Bi-Dimensional) radar tracks Dragon Balls in BOTH worlds — pick the set for the
+		// current dimension. Checked before the generic fallback so it doesn't use a single ball set.
+		if (targets == null && mainHand.getItem() == fusedRadarItem) {
+			targets = isOverworld ? clientEarthPositions : clientNamekPositions;
+			range = getRadarRange(mainHand);
+			isMainHand = true;
+		} else if (targets == null && offHand.getItem() == fusedRadarItem) {
+			targets = isOverworld ? clientEarthPositions : clientNamekPositions;
+			range = getRadarRange(offHand);
+			isMainHand = false;
+		}
+
+		if (targets == null) {
+			if (mainHand.getItem() instanceof DragonRadarItem genericMainRadar) {
+				DragonRadarDefinition definition = genericMainRadar.getDefinition();
+				if (definition != null && definition.supportsDimension(level.dimension()) && definition.getBallSetId() != null) {
+					targets = clientPositionsBySet.getOrDefault(definition.getBallSetId(), List.of());
+					range = getRadarRange(mainHand);
+					isMainHand = true;
+				}
+			} else if (offHand.getItem() instanceof DragonRadarItem genericOffRadar) {
+				DragonRadarDefinition definition = genericOffRadar.getDefinition();
+				if (definition != null && definition.supportsDimension(level.dimension()) && definition.getBallSetId() != null) {
+					targets = clientPositionsBySet.getOrDefault(definition.getBallSetId(), List.of());
+					range = getRadarRange(offHand);
+					isMainHand = false;
+				}
+			}
+		}
+
+		if (targets != null) {
+			int radarSize = 140;
+			int centerX;
+			int centerY = mc.getWindow().getGuiScaledHeight() - radarSize - 10;
+
+			if (isMainHand) {
+				centerX = mc.getWindow().getGuiScaledWidth() - radarSize - 10;
+			} else {
+				centerX = 10;
+			}
+
+			boolean showProximity = DragonRadarItem.hasCompletedQuest(player, DragonRadarItem.QUEST_PROXIMITY_HUD);
+			renderRadar(event.getGuiGraphics(), player, targets, range, centerX, centerY, showProximity);
+		}
+	}
+
+	private static int getRadarRange(ItemStack stack) {
+		var custom = stack.getOrDefault(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.EMPTY);
+		int r = custom.copyTag().getIntOr("RadarRange", 0);
+		return (r == 0) ? 150 : r;
+	}
+
+	private static void renderRadar(GuiGraphicsExtractor gui, Player player, List<BlockPos> targets, int range, int centerX, int centerY, boolean showProximity) {
+		int textureW = 121;
+		int textureH = 146;
+
+		gui.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, RADAR_TEXTURE, centerX, centerY, 0, 0, textureW, textureH, 256, 256);
+
+		int radarCenterX = centerX + 61;
+		int radarCenterY = centerY + 87;
+
+		double nearestDist = Double.MAX_VALUE;
+
+		for (BlockPos pos : targets) {
+			double dx = pos.getX() - player.getX();
+			double dz = pos.getZ() - player.getZ();
+			double dist = Math.sqrt(dx * dx + dz * dz);
+			if (dist < nearestDist) nearestDist = dist;
+
+			double angleToTarget = Math.atan2(dz, dx);
+			double playerYaw = Math.toRadians(player.getYRot()) + (Math.PI / 2);
+			double finalAngle = angleToTarget - playerYaw;
+
+			double renderAngle = finalAngle - (Math.PI / 2);
+
+			if (dist <= range) {
+				double scaledDist = (dist / range) * 50.0;
+
+				int dotX = (int) (radarCenterX + (scaledDist * Math.cos(renderAngle)));
+				int dotY = (int) (radarCenterY + (scaledDist * Math.sin(renderAngle)));
+
+				gui.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, RADAR_TEXTURE, dotX - 3, dotY - 3, 130, 0, 6, 6, 256, 256);
+
+			} else {
+				int arrowRadius = 50;
+
+				int arrowX = (int) (radarCenterX + (arrowRadius * Math.cos(renderAngle)));
+				int arrowY = (int) (radarCenterY + (arrowRadius * Math.sin(renderAngle)));
+
+				float rotation = (float) renderAngle + (float) (Math.PI / 2);
+
+				gui.pose().pushMatrix();
+				gui.pose().translate(arrowX, arrowY);
+				gui.pose().rotate(rotation);
+				gui.pose().translate(-3.5f, -3.0f);
+
+				gui.blit(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, RADAR_TEXTURE, 0, 0, 130, 8, 7, 6, 256, 256);
+
+				gui.pose().popMatrix();
+			}
+		}
+
+		// Proximity readout — distance to the closest Dragon Ball (Bulma "Tracker Display" upgrade).
+		if (showProximity && nearestDist != Double.MAX_VALUE) {
+			var font = Minecraft.getInstance().font;
+			Component text = Component.translatable("gui.dmzradar.nearest", (int) Math.round(nearestDist));
+			int textX = radarCenterX - font.width(text) / 2;
+			int textY = centerY + textureH - 18;
+			gui.text(font, text, textX, textY, 0xFFD9A441, true);
+		}
+
+	}
+}

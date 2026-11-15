@@ -1,0 +1,192 @@
+package com.dragonminez.server.storage;
+
+import com.dragonminez.Env;
+import com.dragonminez.LogUtil;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.config.GeneralServerConfig;
+import com.dragonminez.common.events.DMZEvent;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.network.S2C.StatsSyncS2C;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.common.util.TransformationsHelper;
+import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.level.ServerPlayer;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
+
+import java.util.UUID;
+import java.util.concurrent.*;
+
+public class StorageManager {
+	private static IDataStorage activeStorage;
+	private static ScheduledExecutorService autoSaveScheduler;
+	private static ExecutorService dbExecutor;
+	private static final ConcurrentHashMap<UUID, CompletableFuture<Void>> saveChains = new ConcurrentHashMap<>();
+
+	public static void init() {
+		GeneralServerConfig.StorageConfig.StorageType type = ConfigManager.getServerConfig().getStorage().getStorageType();
+
+		switch (type) {
+			case DATABASE -> activeStorage = new DatabaseManager();
+			case JSON -> activeStorage = new JsonStorage();
+			case NBT -> {
+				LogUtil.info(Env.SERVER, "Using default NBT storage (Vanilla).");
+				activeStorage = null;
+			}
+		}
+
+		if (activeStorage != null) {
+			activeStorage.init();
+			int threads = ConfigManager.getServerConfig().getStorage().getThreadPoolSize();
+			if (dbExecutor != null) {
+				shutdownDbExecutor();
+			}
+			dbExecutor = Executors.newFixedThreadPool(threads);
+			LogUtil.info(Env.SERVER, "Storage initialized with " + threads + " async threads.");
+			startAutoSave();
+		}
+	}
+
+	public static void reload() {
+		LogUtil.info(Env.SERVER, "Reloading Storage Subsystem...");
+
+		if (ServerLifecycleHooks.getCurrentServer() != null) {
+			LogUtil.info(Env.SERVER, "Saving online players before storage switch...");
+			for (ServerPlayer player : ServerLifecycleHooks.getCurrentServer().getPlayerList().getPlayers()) {
+				savePlayer(player);
+			}
+		}
+
+		shutdown();
+		init();
+		LogUtil.info(Env.SERVER, "Storage Subsystem reloaded. Active: " + (activeStorage == null ? "NBT (Vanilla)" : activeStorage.getName()));
+	}
+
+	public static void shutdown() {
+		if (autoSaveScheduler != null && !autoSaveScheduler.isShutdown()) {
+			autoSaveScheduler.shutdown();
+		}
+		if (activeStorage != null) {
+			activeStorage.shutdown();
+		}
+		if (dbExecutor != null) {
+			shutdownDbExecutor();
+			dbExecutor = null;
+		}
+	}
+
+	private static void shutdownDbExecutor() {
+		dbExecutor.shutdown();
+		try {
+			if (!dbExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+				dbExecutor.shutdownNow();
+			}
+		} catch (InterruptedException e) {
+			dbExecutor.shutdownNow();
+			Thread.currentThread().interrupt();
+		}
+	}
+
+	public static void loadPlayer(ServerPlayer player) {
+		if (activeStorage == null) return;
+
+		final UUID uuid = player.getUUID();
+
+		CompletableFuture.supplyAsync(() -> activeStorage.loadData(uuid), dbExecutor)
+				.thenAccept(loadedData -> {
+					ServerLifecycleHooks.getCurrentServer().execute(() -> {
+						if (loadedData != null && player.connection != null) {
+							applyLoadedData(player, loadedData);
+						}
+					});
+				})
+				.exceptionally(ex -> {
+					LogUtil.error(Env.SERVER, "Error loading data async for " + player.getName().getString(), ex);
+					return null;
+				});
+	}
+
+	private static void applyLoadedData(ServerPlayer player, CompoundTag loadedData) {
+		NeoForge.EVENT_BUS.post(new DMZEvent.PlayerDataLoadEvent(player, loadedData));
+
+		StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(stats -> {
+			// Never let an empty secondary store wipe a richer in-memory / attachment load.
+			if (isEmptyOrZeroStatsBlob(loadedData) && stats.getStats().getTotalStats() > 0) {
+				LogUtil.info(Env.SERVER,
+						"Skipping async overwrite for {}: secondary store has empty Stats while live totals are {}",
+						player.getName().getString(), stats.getStats().getTotalStats());
+				return;
+			}
+
+			try {
+				stats.load(loadedData);
+			} catch (ClassNotFoundException e) {
+				throw new RuntimeException(e);
+			}
+
+			if (stats.getPlayerQuestData().isSagaLocked("saiyan_saga")) {
+				stats.getPlayerQuestData().setSagaUnlocked("saiyan_saga", true);
+			}
+
+			TransformationsHelper.ensureSelectedFormDefault(stats);
+			TransformationsHelper.ensureSelectedStackFormDefault(stats);
+
+			com.dragonminez.server.events.players.StatsEvents.restoreStatsPoolsOnJoin(player);
+			NetworkHandler.sendToTrackingEntityAndSelf(new StatsSyncS2C(player), player);
+			LogUtil.info(Env.SERVER, "Async data loaded for: " + player.getName().getString()
+					+ " VIT=" + stats.getStats().getVitality()
+					+ " PWR=" + stats.getStats().getKiPower()
+					+ " ENE=" + stats.getStats().getEnergy());
+		});
+	}
+
+	/** True when Stats compound is missing or all six main stats are zero. */
+	private static boolean isEmptyOrZeroStatsBlob(CompoundTag loadedData) {
+		if (loadedData == null || !loadedData.contains("Stats")) return true;
+		CompoundTag s = loadedData.getCompoundOrEmpty("Stats");
+		return s.getIntOr("STR", 0) == 0 && s.getIntOr("SKP", 0) == 0 && s.getIntOr("RES", 0) == 0
+				&& s.getIntOr("VIT", 0) == 0 && s.getIntOr("PWR", 0) == 0 && s.getIntOr("ENE", 0) == 0;
+	}
+
+	public static void savePlayer(ServerPlayer player) {
+		if (activeStorage == null) return;
+
+		StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(stats -> {
+			if (!stats.isDataLoaded() && !stats.getStatus().isHasCreatedCharacter()) return;
+			CompoundTag dataToSave = stats.save();
+
+			NeoForge.EVENT_BUS.post(new DMZEvent.PlayerDataSaveEvent(player, dataToSave));
+
+			String name = player.getScoreboardName();
+			UUID uuid = player.getUUID();
+
+			saveChains.compute(uuid, (id, previous) -> {
+				CompletableFuture<Void> previousStage = previous != null ? previous : CompletableFuture.completedFuture(null);
+				CompletableFuture<Void> chained = previousStage.thenRunAsync(() -> {
+					try {
+						activeStorage.saveData(uuid, name, dataToSave);
+					} catch (Exception e) {
+						LogUtil.error(Env.SERVER, "Failed to save data async for " + name, e);
+					}
+				}, dbExecutor);
+				chained.whenComplete((v, ex) -> saveChains.remove(uuid, chained));
+				return chained;
+			});
+		});
+	}
+
+	private static void startAutoSave() {
+		autoSaveScheduler = Executors.newSingleThreadScheduledExecutor();
+		autoSaveScheduler.scheduleAtFixedRate(StorageManager::performAutoSave, 5, 5, TimeUnit.MINUTES);
+	}
+
+	private static void performAutoSave() {
+		if (ServerLifecycleHooks.getCurrentServer() == null || activeStorage == null) return;
+
+		LogUtil.info(Env.SERVER, "Auto-Saving data...");
+		for (ServerPlayer player : ServerLifecycleHooks.getCurrentServer().getPlayerList().getPlayers()) {
+			savePlayer(player);
+		}
+	}
+}

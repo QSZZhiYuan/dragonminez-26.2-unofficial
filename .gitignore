@@ -1,0 +1,74 @@
+# eclipse (does anyone use this anymore?)
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
+# idea
+out
+*.ipr
+*.iws
+*.iml
+
+# docs
+docs/_site/
+docs/.sass-cache/
+docs/.jekyll-cache/
+docs/.bundle/
+docs/superpowers/
+
+# some ai data & stuff
+graphify-out/cost.json
+
+# Ignore everything in .idea (codestyles are now included because that's personal preference)
+.idea
+
+# gradle
+build
+.gradle
+
+# other
+eclipse
+run
+run-data
+
+# otros mas
+/test/
+generated
+
+# Files from Forge MDK
+forge*changelog.txt
+
+run-data/
+src/generated/resources/.cache
+
+# Local migration and smoke-test artifacts
+ui-fix-*.log
+*.log
+/*.nbt
+.cp.txt
+CLAUDE.md
+README_ES.md
+README_PT.md
+complete_registry_localization.py
+inspect_nbt.py
+localize_character_stats.py
+localize_inventory.py
+localize_sidequests.py
+localize_skills.py
+dialogue-english.json
+gui-english.json
+/region-*.nbt
+
+# Local caches, runtime state and machine-specific diagnostics
+/.cache/
+/logs/
+/config/
+/defaultconfigs/
+/mods/
+/_tcp.gradle.kts
+
+# Development-only client driver used during port validation
+src/uiSmoke/

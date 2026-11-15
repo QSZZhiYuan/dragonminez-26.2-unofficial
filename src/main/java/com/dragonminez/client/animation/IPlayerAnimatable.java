@@ -1,0 +1,24 @@
+package com.dragonminez.client.animation;
+
+public interface IPlayerAnimatable {
+
+	void dragonminez$setFlying(boolean flying);
+	boolean dragonminez$isFlying();
+
+	void dragonminez$triggerDash(int direction);
+	void dragonminez$triggerEvasion();
+
+	void dragonminez$setShootingKi(boolean shootingKi);
+	boolean dragonminez$isShootingKi();
+
+	void dragonminez$playMeleeAnimation(String animationName, boolean isOffhand, float speedMultiplier);
+	boolean dragonminez$isPlayingCombatAnimation();
+	boolean dragonminez$isAttackingWithOffhand();
+	float dragonminez$getCombatPlacementWeight();
+
+	void dragonminez$playKiAnimation(String animationName, boolean hold);
+	void dragonminez$stopKiAnimation();
+    boolean dragonminez$isPlayingKiAnimation();
+
+	String dragonminez$getCurrentPlayingAnimation();
+}

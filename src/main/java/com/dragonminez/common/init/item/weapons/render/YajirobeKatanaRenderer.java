@@ -1,0 +1,24 @@
+package com.dragonminez.common.init.item.weapons.render;
+
+import net.minecraft.client.renderer.entity.state.LivingEntityRenderState;
+import com.dragonminez.common.init.item.weapons.YajirobeKatanaItem;
+import com.dragonminez.common.init.item.weapons.model.YajirobeKatanaModel;
+import net.minecraft.client.renderer.SubmitNodeCollector;
+import net.minecraft.client.renderer.rendertype.RenderType;
+import net.minecraft.client.renderer.rendertype.RenderTypes;
+import net.minecraft.resources.Identifier;
+import org.jetbrains.annotations.Nullable;
+import com.geckolib.renderer.GeoItemRenderer;
+
+public class YajirobeKatanaRenderer extends GeoItemRenderer<YajirobeKatanaItem> {
+
+    public YajirobeKatanaRenderer() {
+        super(new YajirobeKatanaModel());
+    }
+
+    @Override
+    public RenderType getRenderType(com.geckolib.renderer.base.GeoRenderState renderState, Identifier texture) {
+        return RenderTypes.entityCutout(texture);
+    }
+}
+

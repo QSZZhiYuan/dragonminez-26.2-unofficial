@@ -1,0 +1,354 @@
+package com.dragonminez.server.events;
+
+import com.dragonminez.Reference;
+import com.dragonminez.common.config.ConfigManager;
+import com.dragonminez.common.config.EntitiesConfig;
+import com.dragonminez.common.init.EntityAttributes;
+import com.dragonminez.common.init.MainDamageTypes;
+import com.dragonminez.common.init.MainEffects;
+import com.dragonminez.common.init.entities.ITextureVariant;
+import com.dragonminez.common.init.entities.MastersEntity;
+import com.dragonminez.common.init.entities.ki.AbstractKiProjectile;
+import com.dragonminez.common.init.entities.sagas.DBSagasEntity;
+import com.dragonminez.common.network.NetworkHandler;
+import com.dragonminez.common.network.S2C.AppearanceSyncS2C;
+import com.dragonminez.common.network.S2C.StatsSyncS2C;
+import com.dragonminez.common.network.C2S.SummonPlayerShadowDummyC2S;
+import com.dragonminez.common.init.entities.ShadowDummyEntity;
+import com.dragonminez.common.quest.Difficulty;
+import com.dragonminez.common.stats.StatsCapability;
+import com.dragonminez.common.stats.StatsProvider;
+import com.dragonminez.server.world.dimension.SacredKaiDimension;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.animal.cow.MushroomCow;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
+import net.neoforged.neoforge.event.entity.living.LivingEvent;
+import net.neoforged.neoforge.event.tick.EntityTickEvent;
+import net.neoforged.neoforge.event.entity.living.LivingDamageEvent;
+import net.neoforged.neoforge.event.entity.living.MobEffectEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.Mod;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.server.MinecraftServer;
+import com.dragonminez.common.quest.QuestService;
+import com.dragonminez.server.world.data.PartySavedData;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+@EventBusSubscriber(modid = Reference.MOD_ID)
+public class EntitiesEvents {
+
+	private static final double QUEST_TETHER_RANGE_SQR = 31250.0;
+	private static final double SHADOW_DUMMY_TETHER_SQR = 100.0 * 100.0;
+
+	private static final int QUEST_COMBAT_TICK_INTERVAL = 20;
+	private static final int QUEST_COMBAT_GRACE_TICKS = 100;
+
+	@SubscribeEvent
+	public static void onEntityJoinWorld(EntityJoinLevelEvent event) {
+		if (event.getLevel().isClientSide() || !(event.getEntity() instanceof LivingEntity entity)) return;
+		if (entity.getPersistentData().getBooleanOr("dmz_stats_configured", false)) return;
+
+		Difficulty difficulty = Difficulty.fromName(entity.getPersistentData().getStringOr("dmz_difficulty", ""));
+		double hpMult = difficulty.hpMultiplier();
+		double dmgMult = difficulty.damageMultiplier();
+
+		boolean isQuestEntity = entity.getPersistentData().contains("dmz_quest_hp");
+
+		if (isQuestEntity) {
+			double finalHealth = entity.getPersistentData().getDoubleOr("dmz_quest_hp", 0.0) * hpMult;
+			double finalMelee = entity.getPersistentData().getDoubleOr("dmz_quest_melee", 0.0) * dmgMult;
+			double finalKi = entity.getPersistentData().getDoubleOr("dmz_quest_ki", 0.0) * dmgMult;
+
+			applyStatsToEntity(entity, finalHealth, finalMelee, finalKi);
+
+			if (entity.getPersistentData().contains("dmz_quest_texture_variant") && entity instanceof ITextureVariant variantEntity) {
+				variantEntity.setTextureVariant(entity.getPersistentData().getIntOr("dmz_quest_texture_variant", 0));
+			}
+
+			if (entity.getPersistentData().contains("dmz_quest_ai_tier") && entity instanceof DBSagasEntity sagasEntity) {
+				sagasEntity.setAiTierById(entity.getPersistentData().getIntOr("dmz_quest_ai_tier", 0));
+			}
+
+			if (entity.getPersistentData().getBooleanOr("dmz_quest_no_transform", false) && entity instanceof DBSagasEntity sagasEntity) {
+				sagasEntity.setTransformationDisabled(true);
+			}
+		} else {
+			String registryName = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType()).toString();
+			EntitiesConfig.EntityStats defaultStats = ConfigManager.getEntityStats(registryName);
+
+			if (defaultStats != null) {
+				double finalHealth = (defaultStats.getHealth() != null ? defaultStats.getHealth() : 20.0) * hpMult;
+				double finalMelee = (defaultStats.getMeleeDamage() != null ? defaultStats.getMeleeDamage() : 1.0) * dmgMult;
+				double finalKi = (defaultStats.getKiDamage() != null ? defaultStats.getKiDamage() : 1.0) * dmgMult;
+
+				applyStatsToEntity(entity, finalHealth, finalMelee, finalKi);
+			}
+		}
+
+		entity.getPersistentData().putBoolean("dmz_stats_configured", true);
+	}
+
+	@SubscribeEvent
+	public static void onMooshroomSpawnVariant(EntityJoinLevelEvent event) {
+		if (event.getLevel().isClientSide()) return;
+		if (!(event.getEntity() instanceof MushroomCow cow)) return;
+		if (!event.getLevel().dimension().equals(SacredKaiDimension.SACREDKAI_KEY)) return;
+		if (cow.getPersistentData().getBooleanOr("dmz_mooshroom_variant", false)) return;
+		cow.getPersistentData().putBoolean("dmz_mooshroom_variant", true);
+		if (cow.getRandom().nextBoolean()) {
+			// 26.2: MushroomCow#setVariant is private - the variant is a data component now.
+		}
+	}
+
+	@SubscribeEvent
+	public static void onStunnedEntityAttack(LivingIncomingDamageEvent event) {
+		if (event.getEntity().level().isClientSide()) return;
+		if (event.getSource().getDirectEntity() instanceof LivingEntity attacker
+				&& attacker.hasEffect(MainEffects.STUN)) {
+			event.setCanceled(true);
+		}
+	}
+
+	@SubscribeEvent
+	public static void onStunApplied(MobEffectEvent.Added event) {
+		if (!(event.getEntity() instanceof LivingEntity entity)) return;
+		if (entity.level().isClientSide() || entity instanceof Player) return;
+		if (event.getEffectInstance().getEffect() != MainEffects.STUN) return;
+
+		if (entity instanceof DBSagasEntity saga && saga.isCasting()) {
+			saga.stopCasting();
+		}
+
+		List<AbstractKiProjectile> owned = entity.level().getEntitiesOfClass(AbstractKiProjectile.class,
+				entity.getBoundingBox().inflate(64.0),
+				p -> p.getOwner() != null && p.getOwner().getUUID().equals(entity.getUUID()));
+		for (AbstractKiProjectile projectile : owned) projectile.discard();
+	}
+
+	@SubscribeEvent
+	public static void onStunnedEntityTick(EntityTickEvent.Post event) {
+		if (!(event.getEntity() instanceof LivingEntity entity)) return;
+		if (entity.level().isClientSide() || entity instanceof Player) return;
+		if (!entity.hasEffect(MainEffects.STUN)) return;
+
+		Vec3 movement = entity.getDeltaMovement();
+		entity.setDeltaMovement(0.0D, Math.min(movement.y, 0.0D), 0.0D);
+		if (entity instanceof Mob mob) {
+			mob.getNavigation().stop();
+			mob.setJumping(false);
+		}
+	}
+
+	private static final int KI_SLOW_DURATION_TICKS = 30;
+
+	@SubscribeEvent
+	public static void onKiHitSlow(LivingDamageEvent.Pre event) {
+		if (event.getEntity().level().isClientSide()) return;
+		if (!MainDamageTypes.isKiblastDamage(event.getSource())) return;
+		event.getEntity().addEffect(com.dragonminez.common.util.MobEffectCompatibility.create(MainEffects.KI_SLOW, KI_SLOW_DURATION_TICKS, 0, false, false, true));
+	}
+
+	private static void applyStatsToEntity(LivingEntity entity, double health, double melee, double ki) {
+		if (entity.getAttributes().hasAttribute(Attributes.MAX_HEALTH)) {
+			entity.getAttribute(Attributes.MAX_HEALTH).setBaseValue(health);
+			entity.heal((float) health);
+		}
+		if (entity.getAttributes().hasAttribute(Attributes.ATTACK_DAMAGE)) {
+			entity.getAttribute(Attributes.ATTACK_DAMAGE).setBaseValue(melee);
+		}
+		if (entity.getAttributes().hasAttribute(EntityAttributes.KI_BLAST_DAMAGE)) {
+			entity.getAttribute(EntityAttributes.KI_BLAST_DAMAGE).setBaseValue(ki);
+		}
+	}
+
+	@SubscribeEvent
+	public static void onPlayerLoggedOut(PlayerEvent.PlayerLoggedOutEvent event) {
+		if (!event.getEntity().level().isClientSide() && event.getEntity() instanceof ServerPlayer player) {
+			cleanupQuestEntities(player.level(), player.getUUID());
+		}
+	}
+
+	@SubscribeEvent
+	public static void onPlayerChangedDimension(PlayerEvent.PlayerChangedDimensionEvent event) {
+		if (!event.getEntity().level().isClientSide() && event.getEntity() instanceof ServerPlayer player) {
+			ServerLevel oldLevel = player.level().getServer().getLevel(event.getFrom());
+			if (oldLevel != null) cleanupQuestEntities(oldLevel, player.getUUID());
+		}
+	}
+
+	@SubscribeEvent
+	public static void onPlayerDeath(PlayerEvent.PlayerRespawnEvent event) {
+		if (!event.getEntity().level().isClientSide() && event.getEntity() instanceof ServerPlayer player) {
+			cleanupQuestEntities(player.level(), player.getUUID());
+		}
+	}
+
+	@SubscribeEvent
+	public static void onEntityTick(EntityTickEvent.Post event) {
+		if (!(event.getEntity() instanceof LivingEntity entity)) return;
+		if (entity.level().isClientSide() || entity.tickCount % 1000 != 0) return;
+
+		if (!entity.getPersistentData().contains("dmz_quest_owner")) return;
+
+		String ownerUUIDStr = entity.getPersistentData().getStringOr("dmz_quest_owner", "");
+		try {
+			UUID ownerUUID = UUID.fromString(ownerUUIDStr);
+			MinecraftServer server = entity.level().getServer();
+
+			if (entity.getPersistentData().contains(QuestService.QUEST_KEY_TAG)) {
+				if (!hasQuestGuardianInRange(server, entity, ownerUUID, null)) {
+					entity.discard();
+				}
+				return;
+			}
+
+			ServerPlayer player = server.getPlayerList().getPlayer(ownerUUID);
+
+			if (entity instanceof ShadowDummyEntity shadow && entity.getPersistentData().getBooleanOr(SummonPlayerShadowDummyC2S.TAG_PLAYER_SHADOW, false)) {
+				if (player == null || player.level() != entity.level() || entity.distanceToSqr(player) > SHADOW_DUMMY_TETHER_SQR) {
+					SummonPlayerShadowDummyC2S.dismissByDummy(shadow);
+				}
+				return;
+			}
+
+			if (player == null || player.level() != entity.level() || entity.distanceToSqr(player) > QUEST_TETHER_RANGE_SQR) {
+				entity.discard();
+			}
+		} catch (Exception e) {
+			entity.discard();
+		}
+	}
+
+	@SubscribeEvent
+	public static void onQuestCombatTick(EntityTickEvent.Post event) {
+		if (!(event.getEntity() instanceof LivingEntity entity)) return;
+		if (entity.level().isClientSide() || entity.tickCount % QUEST_COMBAT_TICK_INTERVAL != 0) return;
+		if (!(entity instanceof Mob mob)) return;
+		if (!mob.getPersistentData().contains(QuestService.QUEST_KEY_TAG)
+				|| !mob.getPersistentData().contains(QuestService.QUEST_OWNER_TAG)) return;
+
+		MinecraftServer server = mob.level().getServer();
+		if (server == null) return;
+
+		UUID ownerUUID;
+		try {
+			ownerUUID = UUID.fromString(mob.getPersistentData().getStringOr(QuestService.QUEST_OWNER_TAG, ""));
+		} catch (IllegalArgumentException e) {
+			return;
+		}
+
+		boolean anyLivingGuardian = false;
+		ServerPlayer nearestLivingInRange = null;
+		double nearestSqr = Double.MAX_VALUE;
+		for (ServerPlayer guardian : questGuardians(server, ownerUUID)) {
+			if (guardian.isDeadOrDying() || guardian.isSpectator()) continue;
+			anyLivingGuardian = true;
+			if (guardian.level() != mob.level()) continue;
+			double distSqr = mob.distanceToSqr(guardian);
+			if (distSqr <= QUEST_TETHER_RANGE_SQR && distSqr < nearestSqr) {
+				nearestSqr = distSqr;
+				nearestLivingInRange = guardian;
+			}
+		}
+
+		if (!anyLivingGuardian) {
+			if (mob.tickCount >= QUEST_COMBAT_GRACE_TICKS) mob.discard();
+			return;
+		}
+
+		LivingEntity current = mob.getTarget();
+		if ((current == null || !current.isAlive()) && nearestLivingInRange != null) {
+			mob.setTarget(nearestLivingInRange);
+		}
+	}
+
+	public static void cleanupQuestEntities(ServerLevel level, UUID playerUUID) {
+		String uuidStr = playerUUID.toString();
+		MinecraftServer server = level.getServer();
+
+		for (Entity entity : level.getAllEntities()) {
+			if (!(entity instanceof LivingEntity)) continue;
+			if (!entity.getPersistentData().contains("dmz_quest_owner")) continue;
+
+			String ownerUUID = entity.getPersistentData().getStringOr("dmz_quest_owner", "");
+			if (!ownerUUID.equals(uuidStr)) continue;
+
+			if (entity instanceof ShadowDummyEntity shadow && shadow.getPersistentData().getBooleanOr(SummonPlayerShadowDummyC2S.TAG_PLAYER_SHADOW, false)) {
+				SummonPlayerShadowDummyC2S.dismissByDummy(shadow);
+				continue;
+			}
+
+			if (entity.getPersistentData().contains(QuestService.QUEST_KEY_TAG)
+					&& hasQuestGuardianInRange(server, entity, playerUUID, playerUUID)) {
+				continue;
+			}
+
+			entity.discard();
+		}
+	}
+
+	private static boolean hasQuestGuardianInRange(MinecraftServer server, Entity questEntity, UUID ownerUUID, UUID excluded) {
+		for (ServerPlayer guardian : questGuardians(server, ownerUUID)) {
+			if (excluded != null && guardian.getUUID().equals(excluded)) continue;
+			if (guardian.level() == questEntity.level() && questEntity.distanceToSqr(guardian) <= QUEST_TETHER_RANGE_SQR) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static List<ServerPlayer> questGuardians(MinecraftServer server, UUID ownerUUID) {
+		List<ServerPlayer> guardians = new ArrayList<>();
+		if (server == null || ownerUUID == null) return guardians;
+
+		PartySavedData.PartyInstance party = PartySavedData.get(server).getPartyOf(ownerUUID);
+		if (party != null) {
+			for (UUID memberId : party.getMembers()) {
+				ServerPlayer member = server.getPlayerList().getPlayer(memberId);
+				if (member != null) guardians.add(member);
+			}
+			return guardians;
+		}
+
+		ServerPlayer owner = server.getPlayerList().getPlayer(ownerUUID);
+		if (owner != null) guardians.add(owner);
+		return guardians;
+	}
+	@SubscribeEvent
+	public static void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
+		if (!event.getLevel().isClientSide() && event.getTarget() instanceof MastersEntity master) {
+			ServerPlayer player = (ServerPlayer) event.getEntity();
+			StatsProvider.get(StatsCapability.INSTANCE, player).ifPresent(data -> {
+				// Only players who know Instant Transmission can memorize a master's Ki signature.
+				if (data.getSkills().getSkillLevel("instant_transmission") < 1) return;
+
+				String masterId = master.getStringUUID();
+				boolean alreadyKnown = data.getCharacter().getInteractedMasters().containsKey(masterId);
+
+				String dimId = player.level().dimension().identifier().toString();
+				data.getCharacter().addInteractedMaster(masterId, master.getName().getString(), dimId, master.blockPosition());
+				NetworkHandler.sendToTrackingEntityAndSelf(new AppearanceSyncS2C(player), player);
+
+				if (!alreadyKnown) {
+					player.sendSystemMessage(Component.translatable("message.dragonminez.instant_transmission.ki_learned", master.getName()));
+				}
+			});
+		}
+	}
+}
